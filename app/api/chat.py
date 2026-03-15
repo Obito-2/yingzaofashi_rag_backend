@@ -10,20 +10,16 @@ from openai import OpenAI
 from app.api.auth import get_current_user
 from app.connect import execute_query
 from app.models import ChatRequest, RegenerateRequest
+from app.rag import retrieve_context
 
 router = APIRouter()
 
 # ----------------- LLM 配置 -----------------
-OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY", "")
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-OPENAI_MODEL    = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_API_KEY  = os.getenv("DASHSCOPE_API_KEY", "")
+OPENAI_BASE_URL = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+OPENAI_MODEL    = os.getenv("CHAT_MODEL_NAME", "deepseek-v3.2")
 
 llm = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
-
-# ----------------- RAG 占位 -----------------
-def retrieve_context(query: str) -> str:
-    """向量检索占位，后续接入向量库后在此实现"""
-    return ""
 
 # ----------------- SSE 工具 -----------------
 def sse_event(event: str, data: dict) -> str:
@@ -55,6 +51,7 @@ def _stream_chat(session_id: str, user_id: str, query: str, is_new_session: bool
     system_prompt = "你是一个专业的建筑历史问答助手，专注于中国古代建筑知识。"
     if context:
         system_prompt += f"\n\n参考资料：\n{context}"
+        yield sse_event("context", {"content": context})
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -197,6 +194,7 @@ def chat_regenerate(
         system_prompt = "你是一个专业的建筑历史问答助手，专注于中国古代建筑知识。"
         if context:
             system_prompt += f"\n\n参考资料：\n{context}"
+            yield sse_event("context", {"content": context})
 
         messages = [
             {"role": "system", "content": system_prompt},

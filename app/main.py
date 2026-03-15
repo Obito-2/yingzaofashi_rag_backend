@@ -1,4 +1,7 @@
 # 程序的入口 (FastAPI 或 Flask 实例)
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api import auth, sessions, chat, messages

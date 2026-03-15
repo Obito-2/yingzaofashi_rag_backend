@@ -125,7 +125,7 @@ class Document(SQLModel, table=True):
     # 数据库列名仍保持 metadata，避免影响现有表结构。
     doc_metadata: Optional[dict] = Field(default=None, sa_column=Column("metadata", JSONB))
     chunks_count: int = Field(default=0)
-    vector_dimensions: int = Field(default=1536)
+    vector_dimensions: int = Field(default=1024)
     created_at: int = Field(default_factory=lambda: int(time.time() * 1000))
     updated_at: int = Field(default_factory=lambda: int(time.time() * 1000))
 
