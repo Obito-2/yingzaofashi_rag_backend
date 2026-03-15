@@ -1,0 +1,67 @@
+# Python cache / bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environment (Sealos DevBox local venv layout)
+.venv/
+venv/
+env/
+ENV/
+bin/
+lib/
+lib64/
+include/
+share/
+pyvenv.cfg
+.python-version
+
+# Packaging / build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Test / coverage / type check caches
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+
+# Logs and temp files
+*.log
+*.pid
+*.out
+*.err
+*.tmp
+tmp/
+.cache/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+.pgpass
+db/
+prd/
+.cursor/
+
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+
+# OS
+.DS_Store
+Thumbs.db
