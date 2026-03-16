@@ -10,7 +10,7 @@ from openai import OpenAI
 from app.api.auth import get_current_user
 from app.connect import execute_query
 from app.models import ChatRequest, RegenerateRequest
-from app.rag import retrieve_context
+from app.rag import retrieve_context_structured
 
 router = APIRouter()
 
@@ -19,7 +19,29 @@ OPENAI_API_KEY  = os.getenv("DASHSCOPE_API_KEY", "")
 OPENAI_BASE_URL = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 OPENAI_MODEL    = os.getenv("CHAT_MODEL_NAME", "deepseek-v3.2")
 
+MAX_HISTORY_ROUNDS = int(os.getenv("MAX_HISTORY_ROUNDS", "5"))
+
 llm = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
+
+
+# ----------------- 历史消息加载 -----------------
+def _load_history(session_id: str, k: int = MAX_HISTORY_ROUNDS) -> list[dict]:
+    """加载会话历史消息，截断到最近 k 轮（1轮 = user + assistant），保证成对性。"""
+    rows = execute_query(
+        "SELECT role, content FROM messages WHERE session_id = %s ORDER BY created_at ASC",
+        (session_id,),
+        fetch_all=True,
+    )
+    if not rows:
+        return []
+    history = [{"role": r["role"], "content": r["content"]} for r in rows]
+    if history[-1]["role"] == "user":
+        history.pop()
+    max_msgs = k * 2
+    if len(history) > max_msgs:
+        history = history[-max_msgs:]
+    return history
+
 
 # ----------------- SSE 工具 -----------------
 def sse_event(event: str, data: dict) -> str:
@@ -28,7 +50,10 @@ def sse_event(event: str, data: dict) -> str:
 # ----------------- 流式生成器 -----------------
 def _stream_chat(session_id: str, user_id: str, query: str, is_new_session: bool):
     """核心 SSE 生成器，供 completions 和 regenerate 复用"""
-    # 1. 保存 user message
+    # 1. 在保存当前消息之前，先加载历史（避免当前 query 被重复纳入历史）
+    history = _load_history(session_id)
+
+    # 2. 保存 user message
     user_msg_id = str(uuid.uuid4())
     now = int(time.time() * 1000)
     execute_query(
@@ -36,29 +61,29 @@ def _stream_chat(session_id: str, user_id: str, query: str, is_new_session: bool
         (user_msg_id, session_id, query, now, now),
     )
 
-    # 2. 创建 assistant message 占位
+    # 3. 创建 assistant message 占位
     assistant_msg_id = str(uuid.uuid4())
     execute_query(
         "INSERT INTO messages (id, session_id, role, content, feedback, created_at, updated_at) VALUES (%s, %s, 'assistant', '', 'none', %s, %s)",
         (assistant_msg_id, session_id, now, now),
     )
 
-    # 3. 推送 meta
+    # 4. 推送 meta
     yield sse_event("meta", {"session_id": session_id, "message_id": assistant_msg_id})
 
-    # 4. 构建 prompt（含 RAG 上下文）
-    context = retrieve_context(query)
+    # 5. 构建 prompt（含 RAG 上下文 + 历史对话）
+    prompt_text, citations = retrieve_context_structured(query)
     system_prompt = "你是一个专业的建筑历史问答助手，专注于中国古代建筑知识。"
-    if context:
-        system_prompt += f"\n\n参考资料：\n{context}"
-        yield sse_event("context", {"content": context})
+    if prompt_text:
+        system_prompt += f"\n\n参考资料：\n{prompt_text}"
+        system_prompt += "\n\n请在回答中引用参考资料时，在相关句子末尾标注来源编号，如[1]、[2]。不要在回答末尾生成引用列表。"
+        yield sse_event("citations", {"citations": citations, "count": len(citations)})
 
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": query},
-    ]
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": query})
 
-    # 5. 流式调用 LLM
+    # 6. 流式调用 LLM
     full_content = ""
     try:
         stream = llm.chat.completions.create(
@@ -75,14 +100,14 @@ def _stream_chat(session_id: str, user_id: str, query: str, is_new_session: bool
         yield sse_event("error", {"code": 5003, "msg": str(e)})
         return
 
-    # 6. 更新 assistant message 内容
+    # 7. 更新 assistant message 内容
     done_at = int(time.time() * 1000)
     execute_query(
         "UPDATE messages SET content = %s, updated_at = %s WHERE id = %s",
         (full_content, done_at, assistant_msg_id),
     )
 
-    # 7. 新会话：生成标题并推送 title 事件
+    # 8. 新会话：生成标题并推送 title 事件
     if is_new_session:
         try:
             title_resp = llm.chat.completions.create(
@@ -102,7 +127,7 @@ def _stream_chat(session_id: str, user_id: str, query: str, is_new_session: bool
         )
         yield sse_event("title", {"title": title})
 
-    # 8. 推送 done
+    # 9. 推送 done
     yield sse_event("done", {"status": "finished"})
 
 
@@ -180,7 +205,11 @@ def chat_regenerate(
     )
 
     def regenerate_stream():
-        # 不保存新的 user message，直接用原 query 重新生成
+        # 加载历史（旧 assistant 已删除，最后一条 user 即待重新回复的消息，
+        # 成对性修剪会保留到前一轮完整对，末尾孤立 user 被丢弃）
+        # 因此需手动追加 last_user_msg 作为当前轮
+        history = _load_history(req.session_id)
+
         assistant_msg_id = str(uuid.uuid4())
         now = int(time.time() * 1000)
         execute_query(
@@ -190,16 +219,16 @@ def chat_regenerate(
 
         yield sse_event("meta", {"session_id": req.session_id, "message_id": assistant_msg_id})
 
-        context = retrieve_context(last_user_msg["content"])
+        prompt_text, citations = retrieve_context_structured(last_user_msg["content"])
         system_prompt = "你是一个专业的建筑历史问答助手，专注于中国古代建筑知识。"
-        if context:
-            system_prompt += f"\n\n参考资料：\n{context}"
-            yield sse_event("context", {"content": context})
+        if prompt_text:
+            system_prompt += f"\n\n参考资料：\n{prompt_text}"
+            system_prompt += "\n\n请在回答中引用参考资料时，在相关句子末尾标注来源编号，如[1]、[2]。不要在回答末尾生成引用列表。"
+            yield sse_event("citations", {"citations": citations, "count": len(citations)})
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": last_user_msg["content"]},
-        ]
+        messages = [{"role": "system", "content": system_prompt}]
+        messages.extend(history)
+        messages.append({"role": "user", "content": last_user_msg["content"]})
 
         full_content = ""
         try:

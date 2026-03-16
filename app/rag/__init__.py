@@ -65,14 +65,53 @@ def _format_chunk(index: int, chunk: dict) -> str:
     return "\n".join(parts)
 
 
-def retrieve_context(query: str) -> str:
+def _build_citation(index: int, chunk: dict) -> dict:
+    """将单个 chunk 组装为前端可用的结构化引用对象"""
+    doc_name = _get_document_name(chunk["document_id"])
+    content_type = chunk.get("content_type") or "其他"
+    source = f"({content_type}) {doc_name}"
+    toc_path = chunk.get("toc_path")
+    if toc_path:
+        source += "  " + " > ".join(toc_path)
+
+    citation = {
+        "id": str(index),
+        "source": source,
+        "content": chunk["content"],
+    }
+
+    if chunk.get("has_images"):
+        images = _get_chunk_images(chunk["id"])
+        if images:
+            citation["images"] = [
+                {"name": img["name"], "description": img.get("description"), "url": img.get("url")}
+                for img in images
+            ]
+
+    if chunk.get("has_annotation") and chunk.get("annotation"):
+        citation["annotation"] = "；".join(chunk["annotation"])
+
+    return citation
+
+
+def retrieve_context_structured(query: str) -> tuple[str, list[dict]]:
     """
-    RAG 检索入口：混合检索 → Context 组装。
-    返回格式化的参考资料文本，无结果时返回空字符串。
+    RAG 检索入口：混合检索 → 双输出。
+    返回 (prompt_text, citations)：
+      - prompt_text: 带编号的纯文本，注入 system prompt 供 LLM 引用
+      - citations: 结构化字典列表，推送给前端渲染引用面板
+    无结果时返回 ("", [])。
     """
     chunks = hybrid_search(query)
     if not chunks:
-        return ""
+        return "", []
 
-    blocks = [_format_chunk(i + 1, chunk) for i, chunk in enumerate(chunks)]
-    return "\n\n".join(blocks)
+    prompt_text = "\n\n".join(_format_chunk(i + 1, c) for i, c in enumerate(chunks))
+    citations = [_build_citation(i + 1, c) for i, c in enumerate(chunks)]
+    return prompt_text, citations
+
+
+def retrieve_context(query: str) -> str:
+    """向后兼容：返回纯文本格式的参考资料。"""
+    prompt_text, _ = retrieve_context_structured(query)
+    return prompt_text
