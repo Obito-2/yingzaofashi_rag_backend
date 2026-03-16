@@ -1,11 +1,24 @@
-# 用户指定忽略
-.cursor
+
+# === 用户自定义及项目清理 ===
 .cursor/
 prd/
-include/
+# 那个奇怪的 typo 文件
+"=1.0,"
+
+# === 核心目录 (针对已经在根目录产生的虚拟环境软链接) ===
 bin/
+include/
 lib/
 lib64/
+pyvenv.cfg
+share/
+
+# === Python 虚拟环境 (标准路径) ===
+.venv/
+venv/
+env/
+ENV/
+.python-version
 
 # Python cache / bytecode
 __pycache__/
@@ -13,14 +26,6 @@ __pycache__/
 *$py.class
 *.so
 
-# Virtual environment (Sealos DevBox local venv layout)
-.venv/
-venv/
-env/
-ENV/
-share/
-pyvenv.cfg
-.python-version
 
 # Packaging / build artifacts
 build/
