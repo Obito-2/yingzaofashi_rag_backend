@@ -54,3 +54,24 @@ def execute_query(query, params=None, fetch_one=False, fetch_all=False):
     finally:
         cur.close()
         release_connection(conn)
+
+
+def fetch_all_users(show_password_hash: bool = False):
+    """
+    查询 users 表的所有用户并返回结果（字典列表）。
+    默认不打印 password_hash，避免在控制台泄露敏感信息。
+    """
+    if show_password_hash:
+        columns = "id, username, password_hash, nickname, avatar_url, created_at, updated_at, is_deleted"
+    else:
+        columns = "id, username, nickname, avatar_url, created_at, updated_at, is_deleted"
+
+    sql = f"SELECT {columns} FROM public.users ORDER BY created_at DESC;"
+    return execute_query(sql, params=(), fetch_all=True)
+
+
+if __name__ == "__main__":
+    users = fetch_all_users(show_password_hash=True)
+    print(f"Total users: {len(users)}")
+    for u in users:
+        print(u)

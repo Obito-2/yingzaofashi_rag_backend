@@ -111,6 +111,7 @@ class ContentTypeEnum(str, Enum):
     original  = "原文"
     annotation = "注解"
     translation = "译文"
+    interpretation = "解读"
     other     = "其他"
 
 # ----------------- documents 书籍知识库表 -----------------
