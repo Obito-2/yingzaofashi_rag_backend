@@ -4,8 +4,9 @@ import uuid
 from enum import Enum
 from typing import Optional, List
 from sqlmodel import SQLModel, Field
-from sqlalchemy import Column, String, Float, LargeBinary
+from sqlalchemy import Column, String
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY, TSVECTOR
+from pgvector.sqlalchemy import Vector
 from pydantic import validator, root_validator
 import re
 
@@ -108,11 +109,25 @@ class MessageItem(SQLModel):
 # ==================== RAG 知识库数据库模型 ====================
 
 class ContentTypeEnum(str, Enum):
-    original  = "原文"
-    annotation = "注解"
-    translation = "译文"
-    interpretation = "解读"
-    other     = "其他"
+    """文本 chunk 的内容类型"""
+    original_text = "original_text"
+    annotation = "annotation"
+    modern_translation = "modern_translation"
+    interpretation = "interpretation"
+    others_text = "others_text"
+
+class ChunkTypeEnum(str, Enum):
+    """relations 表中 source_type / target_type 使用，文本类型与 ContentTypeEnum 一致，图像固定为 image"""
+    original_text = "original_text"
+    annotation = "annotation"
+    modern_translation = "modern_translation"
+    interpretation = "interpretation"
+    others_text = "others_text"
+    image = "image"
+
+class RelationTypeEnum(str, Enum):
+    illustrates = "illustrates"
+    annotates = "annotates"
 
 # ----------------- documents 书籍知识库表 -----------------
 class Document(SQLModel, table=True):
@@ -121,52 +136,57 @@ class Document(SQLModel, table=True):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     name: str = Field()
     authors: Optional[List[str]] = Field(default=None, sa_column=Column(ARRAY(String)))
-    publish_info: Optional[str] = Field(default=None)          # 出版社、出版时间等版权信息
-    # SQLAlchemy Declarative 中 metadata 是保留属性名，Python 侧需避开；
-    # 数据库列名仍保持 metadata，避免影响现有表结构。
-    doc_metadata: Optional[dict] = Field(default=None, sa_column=Column("metadata", JSONB))
-    chunks_count: int = Field(default=0)
-    vector_dimensions: int = Field(default=1024)
+    other_metadata: Optional[dict] = Field(default=None, sa_column=Column(JSONB))
+    content: Optional[str] = Field(default=None)
     created_at: int = Field(default_factory=lambda: int(time.time() * 1000))
     updated_at: int = Field(default_factory=lambda: int(time.time() * 1000))
 
-# ----------------- chunks 文本块表 -----------------
-class Chunk(SQLModel, table=True):
-    __tablename__ = "chunks"
+# ----------------- text_chunks 文本块表 -----------------
+class TextChunk(SQLModel, table=True):
+    __tablename__ = "text_chunks"
 
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
-    document_id: str = Field(foreign_key="documents.id")
-    content: str = Field()
-    # 同上，Python 属性名避免使用保留字 metadata。
-    chunk_metadata: Optional[dict] = Field(default=None, sa_column=Column("metadata", JSONB))
-    # embedding 用 ARRAY(Float) 存储，避免强依赖 pgvector Python 包；
-    # 数据端写入时通过原生 SQL 使用 ::vector 强制转型写入真实 vector 列
-    embedding: Optional[List[float]] = Field(default=None, sa_column=Column(ARRAY(Float)))
-    ts_vector: Optional[str] = Field(default=None, sa_column=Column(TSVECTOR))
-    content_type: Optional[str] = Field(default=None)          # ContentTypeEnum 值
+    chunk_id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    content_type: Optional[str] = Field(default=None)
+    chunk_size: Optional[int] = Field(default=None)
+    main_text: str = Field()
+    book_id: str = Field(foreign_key="documents.id")
+    closest_title: Optional[str] = Field(default=None)
     toc_path: Optional[List[str]] = Field(default=None, sa_column=Column(ARRAY(String)))
-    has_images: bool = Field(default=False)
-    has_annotation: bool = Field(default=False)
-    annotation: Optional[List[str]] = Field(default=None, sa_column=Column(ARRAY(String)))
+    search_text: Optional[str] = Field(default=None)
+    ts_vector: Optional[str] = Field(default=None, sa_column=Column(TSVECTOR))
+    other_metadata: Optional[dict] = Field(default=None, sa_column=Column(JSONB))
+    embedding_values: Optional[List[float]] = Field(default=None, sa_column=Column(Vector(1024)))
     created_at: int = Field(default_factory=lambda: int(time.time() * 1000))
     updated_at: int = Field(default_factory=lambda: int(time.time() * 1000))
 
-# ----------------- images 图片表 -----------------
-class Image(SQLModel, table=True):
-    __tablename__ = "images"
+# ----------------- image_chunks 图像块表 -----------------
+class ImageChunk(SQLModel, table=True):
+    __tablename__ = "image_chunks"
 
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
-    document_id: Optional[str] = Field(default=None, foreign_key="documents.id")
-    name: str = Field()
-    description: Optional[str] = Field(default=None)
-    url: Optional[str] = Field(default=None)
-    binary_data: Optional[bytes] = Field(default=None, sa_column=Column(LargeBinary))
+    image_id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    title: Optional[str] = Field(default=None)
+    image_uri: Optional[str] = Field(default=None)
+    local_path: Optional[str] = Field(default=None)
+    alt_text: Optional[str] = Field(default=None)
+    caption: Optional[str] = Field(default=None)
+    book_id: Optional[str] = Field(default=None, foreign_key="documents.id")
+    closest_title: Optional[str] = Field(default=None)
+    toc_path: Optional[List[str]] = Field(default=None, sa_column=Column(ARRAY(String)))
+    search_text: Optional[str] = Field(default=None)
+    ts_vector: Optional[str] = Field(default=None, sa_column=Column(TSVECTOR))
+    embedding_values: Optional[List[float]] = Field(default=None, sa_column=Column(Vector(1024)))
+    format: Optional[str] = Field(default=None)
     created_at: int = Field(default_factory=lambda: int(time.time() * 1000))
     updated_at: int = Field(default_factory=lambda: int(time.time() * 1000))
 
-# ----------------- chunk_images chunk与图片关联表 -----------------
-class ChunkImage(SQLModel, table=True):
-    __tablename__ = "chunk_images"
+# ----------------- relations 关联关系表 -----------------
+class Relation(SQLModel, table=True):
+    __tablename__ = "relations"
 
-    chunk_id: str = Field(foreign_key="chunks.id", primary_key=True)
-    image_id: str = Field(foreign_key="images.id", primary_key=True)
+    relation_id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    source_type: str = Field()
+    source_id: str = Field()
+    target_type: str = Field()
+    target_id: str = Field()
+    relation_type: str = Field()
+    created_at: int = Field(default_factory=lambda: int(time.time() * 1000))

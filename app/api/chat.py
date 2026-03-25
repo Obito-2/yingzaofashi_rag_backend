@@ -72,12 +72,12 @@ def _stream_chat(session_id: str, user_id: str, query: str, is_new_session: bool
     yield sse_event("meta", {"session_id": session_id, "message_id": assistant_msg_id})
 
     # 5. 构建 prompt（含 RAG 上下文 + 历史对话）
-    prompt_text, citations = retrieve_context_structured(query)
+    prompt_text, search_result = retrieve_context_structured(query)
     system_prompt = "你是一个专业的建筑历史问答助手，专注于中国古代建筑知识。"
     if prompt_text:
         system_prompt += f"\n\n参考资料：\n{prompt_text}"
         system_prompt += "\n\n请在回答中引用参考资料时，在相关句子末尾标注来源编号，如[1]、[2]。不要在回答末尾生成引用列表。"
-        yield sse_event("citations", {"citations": citations, "count": len(citations)})
+        yield sse_event("citations", search_result)
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(history)
@@ -219,12 +219,12 @@ def chat_regenerate(
 
         yield sse_event("meta", {"session_id": req.session_id, "message_id": assistant_msg_id})
 
-        prompt_text, citations = retrieve_context_structured(last_user_msg["content"])
+        prompt_text, search_result = retrieve_context_structured(last_user_msg["content"])
         system_prompt = "你是一个专业的建筑历史问答助手，专注于中国古代建筑知识。"
         if prompt_text:
             system_prompt += f"\n\n参考资料：\n{prompt_text}"
             system_prompt += "\n\n请在回答中引用参考资料时，在相关句子末尾标注来源编号，如[1]、[2]。不要在回答末尾生成引用列表。"
-            yield sse_event("citations", {"citations": citations, "count": len(citations)})
+            yield sse_event("citations", search_result)
 
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(history)

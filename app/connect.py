@@ -1,5 +1,6 @@
 # app/connect.py
 import os
+import sys
 import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor  # 返回字典格式的结果
@@ -56,22 +57,74 @@ def execute_query(query, params=None, fetch_one=False, fetch_all=False):
         release_connection(conn)
 
 
-def fetch_all_users(show_password_hash: bool = False):
+def parse_table_name(table_name: str):
     """
-    查询 users 表的所有用户并返回结果（字典列表）。
-    默认不打印 password_hash，避免在控制台泄露敏感信息。
+    解析表名，支持:
+    - users -> public.users
+    - public.users -> public.users
     """
-    if show_password_hash:
-        columns = "id, username, password_hash, nickname, avatar_url, created_at, updated_at, is_deleted"
+    if "." in table_name:
+        schema_name, pure_table_name = table_name.split(".", 1)
     else:
-        columns = "id, username, nickname, avatar_url, created_at, updated_at, is_deleted"
+        schema_name, pure_table_name = "public", table_name
+    return schema_name, pure_table_name
 
-    sql = f"SELECT {columns} FROM public.users ORDER BY created_at DESC;"
-    return execute_query(sql, params=(), fetch_all=True)
+
+def fetch_table_schema(table_name: str):
+    """查询指定表的结构信息。"""
+    schema_name, pure_table_name = parse_table_name(table_name)
+    sql = """
+    SELECT
+        ordinal_position,
+        column_name,
+        data_type,
+        is_nullable,
+        column_default
+    FROM information_schema.columns
+    WHERE table_schema = %s
+      AND table_name = %s
+    ORDER BY ordinal_position;
+    """
+    return execute_query(sql, params=(schema_name, pure_table_name), fetch_all=True)
+
+
+def fetch_table_preview(table_name: str, limit: int = 10):
+    """查询指定表前 N 条数据。"""
+    schema_name, pure_table_name = parse_table_name(table_name)
+    sql = f'SELECT * FROM "{schema_name}"."{pure_table_name}" LIMIT %s;'
+    return execute_query(sql, params=(limit,), fetch_all=True)
+
+
+def print_table_info(table_name: str):
+    """打印表结构与前10条数据。"""
+    schema = fetch_table_schema(table_name)
+    if not schema:
+        print(f"表不存在或无可读列: {table_name}")
+        return
+
+    preview_rows = fetch_table_preview(table_name, limit=10)
+
+    print(f"===== 表结构: {table_name} =====")
+    for col in schema:
+        print(
+            f"{col['ordinal_position']:>2}. "
+            f"{col['column_name']} "
+            f"({col['data_type']}) "
+            f"NULLABLE={col['is_nullable']} "
+            f"DEFAULT={col['column_default']}"
+        )
+
+    print(f"\n===== 前 {len(preview_rows)} 条数据: {table_name} =====")
+    for i, row in enumerate(preview_rows, start=1):
+        print(f"{i:>2}. {row}")
 
 
 if __name__ == "__main__":
-    users = fetch_all_users(show_password_hash=True)
-    print(f"Total users: {len(users)}")
-    for u in users:
-        print(u)
+    if len(sys.argv) < 2:
+        print("用法: python app/connect.py <table_name>")
+        print("示例: python app/connect.py users")
+        print("示例: python app/connect.py public.users")
+        sys.exit(1)
+
+    input_table_name = sys.argv[1]
+    print_table_info(input_table_name)
