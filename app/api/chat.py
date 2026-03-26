@@ -5,12 +5,14 @@ import time
 import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from langsmith import traceable
+from langsmith.wrappers import wrap_openai
 from openai import OpenAI
 
 from app.api.auth import get_current_user
 from app.connect import execute_query
+from app.agent import merged_search_result, run_agent_rag, stream_final_answer
 from app.models import ChatRequest, RegenerateRequest
-from app.rag import retrieve_context_structured
 
 router = APIRouter()
 
@@ -20,8 +22,9 @@ OPENAI_BASE_URL = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.co
 OPENAI_MODEL    = os.getenv("CHAT_MODEL_NAME", "deepseek-v3.2")
 
 MAX_HISTORY_ROUNDS = int(os.getenv("MAX_HISTORY_ROUNDS", "5"))
+AGENT_TRACE_SSE = os.getenv("AGENT_TRACE_SSE", "").lower() in ("1", "true", "yes", "on")
 
-llm = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
+llm = wrap_openai(OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL))
 
 
 # ----------------- 历史消息加载 -----------------
@@ -48,6 +51,7 @@ def sse_event(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 # ----------------- 流式生成器 -----------------
+@traceable(name="sse_chat_completions", run_type="chain")
 def _stream_chat(session_id: str, user_id: str, query: str, is_new_session: bool):
     """核心 SSE 生成器，供 completions 和 regenerate 复用"""
     # 1. 在保存当前消息之前，先加载历史（避免当前 query 被重复纳入历史）
@@ -71,28 +75,20 @@ def _stream_chat(session_id: str, user_id: str, query: str, is_new_session: bool
     # 4. 推送 meta
     yield sse_event("meta", {"session_id": session_id, "message_id": assistant_msg_id})
 
-    # 5. 构建 prompt（含 RAG 上下文 + 历史对话）
-    prompt_text, search_result = retrieve_context_structured(query)
-    system_prompt = "你是一个专业的建筑历史问答助手，专注于中国古代建筑知识。"
-    if prompt_text:
-        system_prompt += f"\n\n参考资料：\n{prompt_text}"
-        system_prompt += "\n\n请在回答中引用参考资料时，在相关句子末尾标注来源编号，如[1]、[2]。不要在回答末尾生成引用列表。"
-        yield sse_event("citations", search_result)
+    # 5. LangGraph Agent：多轮检索—摘要—决策，再流式终答
+    try:
+        agent_state = run_agent_rag(query, session_id=session_id)
+    except Exception as e:
+        yield sse_event("error", {"code": 5003, "msg": str(e)})
+        return
 
-    messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(history)
-    messages.append({"role": "user", "content": query})
+    yield sse_event("citations", merged_search_result(agent_state))
+    if AGENT_TRACE_SSE and agent_state.get("scratchpad"):
+        yield sse_event("agent_trace", {"scratchpad": agent_state["scratchpad"]})
 
-    # 6. 流式调用 LLM
     full_content = ""
     try:
-        stream = llm.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=messages,
-            stream=True,
-        )
-        for chunk in stream:
-            delta = chunk.choices[0].delta.content or ""
+        for delta in stream_final_answer(agent_state, history):
             if delta:
                 full_content += delta
                 yield sse_event("message", {"content": delta})
@@ -117,7 +113,8 @@ def _stream_chat(session_id: str, user_id: str, query: str, is_new_session: bool
                 ],
                 stream=False,
             )
-            title = title_resp.choices[0].message.content.strip()
+            raw_title = title_resp.choices[0].message.content or ""
+            title = raw_title.strip()
         except Exception:
             title = query[:30]
 
@@ -128,6 +125,47 @@ def _stream_chat(session_id: str, user_id: str, query: str, is_new_session: bool
         yield sse_event("title", {"title": title})
 
     # 9. 推送 done
+    yield sse_event("done", {"status": "finished"})
+
+
+@traceable(name="sse_chat_regenerate", run_type="chain")
+def _stream_regenerate(session_id: str, user_id: str, last_user_content: str):
+    history = _load_history(session_id)
+
+    assistant_msg_id = str(uuid.uuid4())
+    now = int(time.time() * 1000)
+    execute_query(
+        "INSERT INTO messages (id, session_id, role, content, feedback, created_at, updated_at) VALUES (%s, %s, 'assistant', '', 'none', %s, %s)",
+        (assistant_msg_id, session_id, now, now),
+    )
+
+    yield sse_event("meta", {"session_id": session_id, "message_id": assistant_msg_id})
+
+    try:
+        agent_state = run_agent_rag(last_user_content, session_id=session_id)
+    except Exception as e:
+        yield sse_event("error", {"code": 5003, "msg": str(e)})
+        return
+
+    yield sse_event("citations", merged_search_result(agent_state))
+    if AGENT_TRACE_SSE and agent_state.get("scratchpad"):
+        yield sse_event("agent_trace", {"scratchpad": agent_state["scratchpad"]})
+
+    full_content = ""
+    try:
+        for delta in stream_final_answer(agent_state, history):
+            if delta:
+                full_content += delta
+                yield sse_event("message", {"content": delta})
+    except Exception as e:
+        yield sse_event("error", {"code": 5003, "msg": str(e)})
+        return
+
+    done_at = int(time.time() * 1000)
+    execute_query(
+        "UPDATE messages SET content = %s, updated_at = %s WHERE id = %s",
+        (full_content, done_at, assistant_msg_id),
+    )
     yield sse_event("done", {"status": "finished"})
 
 
@@ -204,57 +242,8 @@ def chat_regenerate(
         (req.session_id,),
     )
 
-    def regenerate_stream():
-        # 加载历史（旧 assistant 已删除，最后一条 user 即待重新回复的消息，
-        # 成对性修剪会保留到前一轮完整对，末尾孤立 user 被丢弃）
-        # 因此需手动追加 last_user_msg 作为当前轮
-        history = _load_history(req.session_id)
-
-        assistant_msg_id = str(uuid.uuid4())
-        now = int(time.time() * 1000)
-        execute_query(
-            "INSERT INTO messages (id, session_id, role, content, feedback, created_at, updated_at) VALUES (%s, %s, 'assistant', '', 'none', %s, %s)",
-            (assistant_msg_id, req.session_id, now, now),
-        )
-
-        yield sse_event("meta", {"session_id": req.session_id, "message_id": assistant_msg_id})
-
-        prompt_text, search_result = retrieve_context_structured(last_user_msg["content"])
-        system_prompt = "你是一个专业的建筑历史问答助手，专注于中国古代建筑知识。"
-        if prompt_text:
-            system_prompt += f"\n\n参考资料：\n{prompt_text}"
-            system_prompt += "\n\n请在回答中引用参考资料时，在相关句子末尾标注来源编号，如[1]、[2]。不要在回答末尾生成引用列表。"
-            yield sse_event("citations", search_result)
-
-        messages = [{"role": "system", "content": system_prompt}]
-        messages.extend(history)
-        messages.append({"role": "user", "content": last_user_msg["content"]})
-
-        full_content = ""
-        try:
-            stream = llm.chat.completions.create(
-                model=OPENAI_MODEL,
-                messages=messages,
-                stream=True,
-            )
-            for chunk in stream:
-                delta = chunk.choices[0].delta.content or ""
-                if delta:
-                    full_content += delta
-                    yield sse_event("message", {"content": delta})
-        except Exception as e:
-            yield sse_event("error", {"code": 5003, "msg": str(e)})
-            return
-
-        done_at = int(time.time() * 1000)
-        execute_query(
-            "UPDATE messages SET content = %s, updated_at = %s WHERE id = %s",
-            (full_content, done_at, assistant_msg_id),
-        )
-        yield sse_event("done", {"status": "finished"})
-
     return StreamingResponse(
-        regenerate_stream(),
+        _stream_regenerate(req.session_id, user_id, last_user_msg["content"]),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
