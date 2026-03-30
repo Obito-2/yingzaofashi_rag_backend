@@ -13,7 +13,7 @@ DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "lchgjt88")
 
 # 创建连接池（最小1个连接，最大10个连接）
-connection_pool = psycopg2.pool.SimpleConnectionPool(
+connection_pool = pool.SimpleConnectionPool(
     1, 10,
     host=DB_HOST,
     port=DB_PORT,
@@ -102,7 +102,7 @@ def print_table_info(table_name: str):
         print(f"表不存在或无可读列: {table_name}")
         return
 
-    preview_rows = fetch_table_preview(table_name, limit=10)
+    preview_rows = fetch_table_preview(table_name, limit=10) or []
 
     print(f"===== 表结构: {table_name} =====")
     for col in schema:

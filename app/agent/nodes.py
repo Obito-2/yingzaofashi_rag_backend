@@ -1,20 +1,24 @@
 # app/agent/nodes.py
 from __future__ import annotations
 
+import json
 import os
+import re
 from collections.abc import Sequence
 from typing import Iterator
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langsmith import traceable
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 from app.agent.prompts import (
     BOUNDARY_MAX_DEPTH,
     BOUNDARY_NO_HITS,
     DECIDE_SYSTEM,
     FINAL_SYSTEM_BASE,
+    FINAL_SYSTEM_NO_RAG,
+    GATE_SYSTEM,
     SUMMARIZE_SYSTEM,
 )
 from app.agent.state import CLUES_CHAR_THRESHOLD, MAX_RETRIEVE_DEPTH, AgentState
@@ -30,16 +34,122 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return default
 
 
+def _message_content_str(msg: BaseMessage) -> str:
+    c = msg.content
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        parts: list[str] = []
+        for p in c:
+            if isinstance(p, str):
+                parts.append(p)
+            elif isinstance(p, dict) and isinstance(p.get("text"), str):
+                parts.append(p["text"])
+            else:
+                parts.append(str(p))
+        return "".join(parts)
+    return ""
+
+
 def _chat_llm() -> ChatOpenAI:
     return ChatOpenAI(
         model=os.getenv("CHAT_MODEL_NAME", ""),
-        api_key=os.getenv("DASHSCOPE_API_KEY", ""),
+        api_key=SecretStr(os.getenv("DASHSCOPE_API_KEY", "")),
         base_url=os.getenv(
             "DASHSCOPE_BASE_URL",
             "https://dashscope.aliyuncs.com/compatible-mode/v1",
         ),
         temperature=0,
     )
+
+
+def _agent_gate_enabled() -> bool:
+    v = os.getenv("AGENT_GATE_MODE", "off").lower().strip()
+    return v in ("on", "llm", "1", "true", "yes")
+
+
+def _gate_llm() -> ChatOpenAI:
+    # 生产环境建议单独配置 AGENT_GATE_MODEL（轻量、非思考模型）以降低首轮延迟。
+    model = (os.getenv("AGENT_GATE_MODEL") or "").strip() or os.getenv(
+        "CHAT_MODEL_NAME", ""
+    )
+    temp_s = os.getenv("AGENT_GATE_TEMPERATURE", "0").strip()
+    try:
+        temperature = float(temp_s)
+    except ValueError:
+        temperature = 0.0
+    return ChatOpenAI(
+        model=model,
+        api_key=SecretStr(os.getenv("DASHSCOPE_API_KEY", "")),
+        base_url=os.getenv(
+            "DASHSCOPE_BASE_URL",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        ),
+        temperature=temperature,
+    )
+
+
+class GateOutput(BaseModel):
+    need_kb: bool = Field(description="是否需要检索《营造法式》知识库")
+    thought: str = Field(description="简短推理")
+
+
+def _parse_gate_output(raw: object) -> GateOutput:
+    """兼容部分模型返回非标准 JSON（如 need_kb=false / thought: ... 键值行）。"""
+    if isinstance(raw, GateOutput):
+        return raw
+    if isinstance(raw, dict):
+        return GateOutput.model_validate(raw)
+    if not isinstance(raw, str):
+        return GateOutput.model_validate(raw)
+
+    s = raw.strip()
+    if s.startswith("```"):
+        lines = s.split("\n")
+        lines = lines[1:] if lines else lines
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        s = "\n".join(lines).strip()
+
+    try:
+        return GateOutput.model_validate_json(s)
+    except Exception:
+        pass
+    try:
+        return GateOutput.model_validate(json.loads(s))
+    except Exception:
+        pass
+
+    m = re.search(r"need_kb\s*[=：:]\s*(true|false)\b", s, re.I)
+    need_kb = m.group(1).lower() == "true" if m else None
+    tm = re.search(r"thought\s*[=：:]\s*(.*)", s, re.I | re.S)
+    thought = (tm.group(1).strip() if tm else "") or ""
+    if need_kb is not None:
+        return GateOutput(need_kb=need_kb, thought=thought or s)
+
+    return GateOutput.model_validate_json(s)
+
+
+def gate_node(state: AgentState) -> dict:
+    if not _agent_gate_enabled():
+        return {"skip_rag": False}
+    llm = _gate_llm().with_structured_output(GateOutput)
+    raw = llm.invoke(
+        [
+            SystemMessage(content=GATE_SYSTEM),
+            HumanMessage(content=f"用户输入：{state['input']}"),
+        ]
+    )
+    out = _parse_gate_output(raw)
+    scratchpad = list(state.get("scratchpad") or [])
+    scratchpad.append(f"[gate] {out.thought}")
+    return {"skip_rag": not out.need_kb, "scratchpad": scratchpad}
+
+
+def route_after_gate(state: AgentState) -> str:
+    if state.get("skip_rag"):
+        return "done"
+    return "retrieve"
 
 
 def _merge_relations(existing: list[dict], new_rows: list[dict]) -> list[dict]:
@@ -53,12 +163,15 @@ def _merge_relations(existing: list[dict], new_rows: list[dict]) -> list[dict]:
         out.append(rel)
     return out
 
-# 检索节点
+# 数据库检索节点
 def retrieve_node(state: AgentState) -> dict:
     with_relations = _env_bool("RAG_WITH_RELATIONS", False)
     prompt_text, search_result = retrieve_context_structured(
         state["current_query"],
         with_relations=with_relations,
+        k_vector= 5, #向量召回数量
+        k_keyword= 5, #关键词召回数量
+        k_final= 3, #单轮rrf最终返回数量，不计算关联关系，如开启关系检索，最终数量应为k_final + n条关系
     )
     items = search_result.get("items") or []
     rels = search_result.get("relations") or []
@@ -106,7 +219,7 @@ def summarize_node(state: AgentState) -> dict:
             HumanMessage(content=f"--- 待压缩线索 ---\n{body}"),
         ]
     )
-    text = (resp.content or "").strip()
+    text = _message_content_str(resp).strip()
     if not text:
         return {}
     return {"clues": [f"--- 线索摘要（原约{total_chars}字已压缩）---\n{text}"]}
@@ -132,11 +245,14 @@ def decide_node(state: AgentState) -> dict:
         f"连续无结果次数：{state.get('empty_retrieval_streak', 0)}\n\n"
         f"已累积知识线索：\n{clues_text}"
     )
-    out: DecisionOutput = llm.invoke(
+    raw = llm.invoke(
         [
             SystemMessage(content=DECIDE_SYSTEM),
             HumanMessage(content=user_block),
         ]
+    )
+    out: DecisionOutput = (
+        raw if isinstance(raw, DecisionOutput) else DecisionOutput.model_validate(raw)
     )
 
     scratchpad = list(state.get("scratchpad") or [])
@@ -189,21 +305,25 @@ def stream_final_answer(
     llm = _chat_llm()
     clues = state.get("clues") or []
     clues_text = "\n\n".join(clues) if clues else ""
+    skip_rag = bool(state.get("skip_rag"))
 
-    system = FINAL_SYSTEM_BASE
-    if clues_text:
-        system += f"\n\n知识线索：\n{clues_text}"
+    if skip_rag and not clues_text:
+        system = FINAL_SYSTEM_NO_RAG
     else:
-        system += BOUNDARY_NO_HITS
+        system = FINAL_SYSTEM_BASE
+        if clues_text:
+            system += f"\n\n知识线索：\n{clues_text}"
+        else:
+            system += BOUNDARY_NO_HITS
 
-    if state.get("depth", 0) >= MAX_RETRIEVE_DEPTH and not state.get(
-        "is_sufficient", False
-    ):
-        system += BOUNDARY_MAX_DEPTH
-    elif state.get("empty_retrieval_streak", 0) >= 2 and clues_text:
-        system += BOUNDARY_NO_HITS
+        if state.get("depth", 0) >= MAX_RETRIEVE_DEPTH and not state.get(
+            "is_sufficient", False
+        ):
+            system += BOUNDARY_MAX_DEPTH
+        elif state.get("empty_retrieval_streak", 0) >= 2 and clues_text:
+            system += BOUNDARY_NO_HITS
 
-    system += "\n\n请在回答中引用参考资料时，在相关句子末尾标注来源编号，如[1]、[2]。不要在回答末尾生成引用列表。"
+        system += "\n\n请在回答中引用参考资料时，在相关句子末尾标注来源编号，如[1]、[2]。不要在回答末尾生成引用列表。"
 
     messages: list = [SystemMessage(content=system)]
     for m in history:

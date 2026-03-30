@@ -88,7 +88,6 @@ def _enrich_items_metadata(items: list[dict]) -> list[dict]:
 
     return items
 
-
 def retrieve_context_structured(
     query: str,
     with_relations: bool = False,

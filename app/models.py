@@ -2,7 +2,7 @@
 import time
 import uuid
 from enum import Enum
-from typing import Optional, List
+from typing import List, Optional
 from sqlmodel import SQLModel, Field
 from sqlalchemy import Column, String
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY, TSVECTOR
@@ -12,8 +12,8 @@ import re
 
 # ----------------- users 数据库模型 -----------------
 class User(SQLModel, table=True):
-    __tablename__ = "users"
-    
+    __tablename__ = "users"  # pyright: ignore[reportAssignmentType]
+
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=50)
     username: str = Field(unique=True, index=True, max_length=100)
     password_hash: str = Field(max_length=255)
@@ -25,7 +25,7 @@ class User(SQLModel, table=True):
 
 # ----------------- sessions 数据库模型 -----------------
 class Session(SQLModel, table=True):
-    __tablename__ = "sessions"
+    __tablename__ = "sessions"  # pyright: ignore[reportAssignmentType]
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=50)
     user_id: str = Field(foreign_key="users.id", max_length=50)
@@ -36,7 +36,7 @@ class Session(SQLModel, table=True):
 
 # ----------------- messages 数据库模型 -----------------
 class Message(SQLModel, table=True):
-    __tablename__ = "messages"
+    __tablename__ = "messages"  # pyright: ignore[reportAssignmentType]
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=50)
     session_id: str = Field(foreign_key="sessions.id", max_length=50)
@@ -131,7 +131,7 @@ class RelationTypeEnum(str, Enum):
 
 # ----------------- documents 书籍知识库表 -----------------
 class Document(SQLModel, table=True):
-    __tablename__ = "documents"
+    __tablename__ = "documents"  # pyright: ignore[reportAssignmentType]
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     name: str = Field()
@@ -143,7 +143,7 @@ class Document(SQLModel, table=True):
 
 # ----------------- text_chunks 文本块表 -----------------
 class TextChunk(SQLModel, table=True):
-    __tablename__ = "text_chunks"
+    __tablename__ = "text_chunks"  # pyright: ignore[reportAssignmentType]
 
     chunk_id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     content_type: Optional[str] = Field(default=None)
@@ -161,7 +161,7 @@ class TextChunk(SQLModel, table=True):
 
 # ----------------- image_chunks 图像块表 -----------------
 class ImageChunk(SQLModel, table=True):
-    __tablename__ = "image_chunks"
+    __tablename__ = "image_chunks"  # pyright: ignore[reportAssignmentType]
 
     image_id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     title: Optional[str] = Field(default=None)
@@ -181,7 +181,7 @@ class ImageChunk(SQLModel, table=True):
 
 # ----------------- relations 关联关系表 -----------------
 class Relation(SQLModel, table=True):
-    __tablename__ = "relations"
+    __tablename__ = "relations"  # pyright: ignore[reportAssignmentType]
 
     relation_id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     source_type: str = Field()

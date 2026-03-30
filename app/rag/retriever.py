@@ -2,6 +2,7 @@
 import os
 import re
 import jieba
+from langsmith import traceable
 
 from app.connect import execute_query
 from app.rag.embedding import embed_query
@@ -16,6 +17,7 @@ RRF_K = 60
 MAX_TOTAL_ITEMS = 20
 
 
+@traceable(name="jieba_query_tokenize", run_type="tool")
 def _tokenize(text: str) -> list[str]:
     return [w for w in jieba.cut(text) if not _STOP_RE.match(w)]
 

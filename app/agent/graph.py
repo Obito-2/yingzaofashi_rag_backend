@@ -5,18 +5,31 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langsmith import traceable
 
-from app.agent.nodes import decide_node, retrieve_node, route_after_decide, summarize_node
+from app.agent.nodes import (
+    decide_node,
+    gate_node,
+    retrieve_node,
+    route_after_decide,
+    route_after_gate,
+    summarize_node,
+)
 from app.agent.state import AgentState
 
 _compiled = None
 
-
+#定义图结构 
 def build_graph():
     g = StateGraph(AgentState)
+    g.add_node("gate", gate_node)
     g.add_node("retrieve", retrieve_node)
     g.add_node("summarize", summarize_node)
     g.add_node("decide", decide_node)
-    g.add_edge(START, "retrieve")
+    g.add_edge(START, "gate")
+    g.add_conditional_edges(
+        "gate",
+        route_after_gate,
+        {"retrieve": "retrieve", "done": END},
+    )
     g.add_edge("retrieve", "summarize")
     g.add_edge("summarize", "decide")
     g.add_conditional_edges(
@@ -45,9 +58,10 @@ def initial_agent_state(user_input: str) -> AgentState:
         "empty_retrieval_streak": 0,
         "citation_items": {},
         "citation_relations": [],
+        "skip_rag": False,
     }
 
-
+#执行入口
 @traceable(name="run_agent_rag", run_type="chain")
 def run_agent_rag(user_input: str, *, session_id: str | None = None) -> AgentState:
     config: RunnableConfig | dict = {}
