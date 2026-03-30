@@ -16,10 +16,13 @@ from app.models import ChatRequest, RegenerateRequest
 
 router = APIRouter()
 
-# ----------------- LLM 配置 -----------------
-OPENAI_API_KEY  = os.getenv("DASHSCOPE_API_KEY", "")
-OPENAI_BASE_URL = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-OPENAI_MODEL    = os.getenv("CHAT_MODEL_NAME", "deepseek-v3.2")
+# ----------------- LLM 配置（OpenAI 兼容接口：优先 SEU_*，兼容 DASHSCOPE_*） -----------------
+OPENAI_API_KEY = os.getenv("SEU_API_KEY") or os.getenv("DASHSCOPE_API_KEY", "")
+OPENAI_BASE_URL = os.getenv("SEU_BASE_URL") or os.getenv(
+    "DASHSCOPE_BASE_URL",
+    "https://dashscope.aliyuncs.com/compatible-mode/v1",
+)
+OPENAI_MODEL = os.getenv("AGENT_GATE_MODEL", "deepseek-v3.2")
 
 MAX_HISTORY_ROUNDS = int(os.getenv("MAX_HISTORY_ROUNDS", "5"))
 AGENT_TRACE_SSE = os.getenv("AGENT_TRACE_SSE", "").lower() in ("1", "true", "yes", "on")

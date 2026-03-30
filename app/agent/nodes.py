@@ -51,14 +51,22 @@ def _message_content_str(msg: BaseMessage) -> str:
     return ""
 
 
+def _seu_api_key() -> str:
+    return os.getenv("SEU_API_KEY") or os.getenv("DASHSCOPE_API_KEY", "")
+
+
+def _seu_base_url() -> str:
+    return os.getenv("SEU_BASE_URL") or os.getenv(
+        "DASHSCOPE_BASE_URL",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    )
+
+
 def _chat_llm() -> ChatOpenAI:
     return ChatOpenAI(
         model=os.getenv("CHAT_MODEL_NAME", ""),
-        api_key=SecretStr(os.getenv("DASHSCOPE_API_KEY", "")),
-        base_url=os.getenv(
-            "DASHSCOPE_BASE_URL",
-            "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        ),
+        api_key=SecretStr(_seu_api_key()),
+        base_url=_seu_base_url(),
         temperature=0,
     )
 
@@ -80,11 +88,8 @@ def _gate_llm() -> ChatOpenAI:
         temperature = 0.0
     return ChatOpenAI(
         model=model,
-        api_key=SecretStr(os.getenv("DASHSCOPE_API_KEY", "")),
-        base_url=os.getenv(
-            "DASHSCOPE_BASE_URL",
-            "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        ),
+        api_key=SecretStr(_seu_api_key()),
+        base_url=_seu_base_url(),
         temperature=temperature,
     )
 
