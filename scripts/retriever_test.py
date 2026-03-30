@@ -11,6 +11,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.rag.embedding import embed_query
+from app.rag.retriever_helpers import (
+    ORIGINAL_TEXT_CONTENT_TYPE,
+    apply_image_slot_limit,
+    apply_original_text_boost,
+    detect_query_intent,
+    lane_weights,
+    merge_text_vector_lanes,
+    rrf_fuse,
+)
 from app.rag.retriever import (
     _tokenize,
     _has_col_data,
@@ -18,7 +27,6 @@ from app.rag.retriever import (
     _text_keyword_search,
     _image_vector_search,
     _image_keyword_search,
-    _rrf_fuse,
     hybrid_search,
 )
 from app.rag import retrieve_context_structured
@@ -110,6 +118,7 @@ def run_single_query(
     t_embed = time.perf_counter() - t0
 
     tokens = _tokenize(query)
+    step_intent = detect_query_intent(query)
     print(f"\n  Embedding   : {len(query_vec)} 维, 耗时 {t_embed:.3f}s")
     print(f"  分词结果    : {' / '.join(tokens)}")
 
@@ -124,13 +133,25 @@ def run_single_query(
 
         # ── Step 3: 四路检索（跳过无数据路）──
         t1 = time.perf_counter()
-        text_vec = _text_vector_search(query_vec, k=top_k) if has_text_vec else []
+        if has_text_vec:
+            gtv = _text_vector_search(query_vec, k=top_k)
+            if step_intent.wants_original_text and step_intent.wants_institution:
+                otv = _text_vector_search(
+                    query_vec,
+                    k=min(top_k, 8),
+                    content_types=[ORIGINAL_TEXT_CONTENT_TYPE],
+                )
+                text_vec = merge_text_vector_lanes(otv, gtv, top_k)
+            else:
+                text_vec = gtv
+        else:
+            text_vec = []
         t2 = time.perf_counter()
-        text_kw = _text_keyword_search(tokens, k=top_k) if has_text_kw else []
+        text_kw = _text_keyword_search(query, k=top_k) if has_text_kw else []
         t3 = time.perf_counter()
         img_vec = _image_vector_search(query_vec, k=top_k) if has_img_vec else []
         t4 = time.perf_counter()
-        img_kw = _image_keyword_search(tokens, k=top_k) if has_img_kw else []
+        img_kw = _image_keyword_search(query, k=top_k) if has_img_kw else []
         t5 = time.perf_counter()
 
         label_tv = f"① 文本向量检索  ({t2-t1:.3f}s)" if has_text_vec else "① 文本向量检索  (跳过，无数据)"
@@ -144,7 +165,21 @@ def run_single_query(
 
         # ── Step 4: RRF 融合 ──
         t6 = time.perf_counter()
-        fused = _rrf_fuse([text_vec, text_kw, img_vec, img_kw], final_k)
+        w_tv, w_tk, w_iv, w_ik = lane_weights(has_img_vec)
+        fuse_k = (
+            final_k * 2
+            if (step_intent.wants_original_text and step_intent.wants_institution)
+            else final_k
+        )
+        fused = rrf_fuse(
+            [text_vec, text_kw, img_vec, img_kw],
+            fuse_k,
+            weights=[w_tv, w_tk, w_iv, w_ik],
+            lane_names=["text_vec", "text_kw", "img_vec", "img_kw"],
+        )
+        fused = apply_original_text_boost(fused, step_intent)
+        max_img = 1 if (step_intent.wants_original_text and step_intent.wants_institution) else final_k
+        fused = apply_image_slot_limit(fused, final_k, max_img)
         t7 = time.perf_counter()
         print_rows(fused, f"⑤ RRF 融合结果  ({t7-t6:.4f}s)")
 

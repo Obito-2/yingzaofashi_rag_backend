@@ -1,6 +1,11 @@
 # app/rag/__init__.py
 from app.connect import execute_query
 from app.rag.retriever import hybrid_search
+from app.rag.retriever_helpers import (
+    ORIGINAL_TEXT_CONTENT_TYPE,
+    QueryIntent,
+    detect_query_intent,
+)
 
 
 def _get_document_name(book_id: str) -> str:

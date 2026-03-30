@@ -1,49 +1,27 @@
 # app/rag/retriever.py
-import os
-import re
-import jieba
+"""混合检索入口与数据库查询；查询解析与 RRF 见 retriever_helpers。"""
 from langsmith import traceable
 
 from app.connect import execute_query
 from app.rag.embedding import embed_query
+from app.rag.retriever_helpers import (
+    ORIGINAL_TEXT_CONTENT_TYPE,
+    apply_image_slot_limit,
+    apply_original_text_boost,
+    build_tsquery_loose,
+    build_tsquery_strict,
+    detect_query_intent,
+    lane_weights,
+    merge_text_vector_lanes,
+    rrf_fuse,
+    strip_fuse_debug_fields,
+    tokenize_query_display,
+)
 
-_DICT_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "custom_char.text")
-if os.path.exists(_DICT_PATH):
-    jieba.load_userdict(_DICT_PATH)
-
-_STOP_RE = re.compile(r"^[\s\u3000\W]+$", re.UNICODE)
-
-RRF_K = 60
 MAX_TOTAL_ITEMS = 20
 
 
-@traceable(name="jieba_query_tokenize", run_type="tool")
-def _tokenize(text: str) -> list[str]:
-    return [w for w in jieba.cut(text) if not _STOP_RE.match(w)]
-
-
-# --------------- 四路检索 ---------------
-
-def _text_vector_search(query_vec: list[float], k: int = 5) -> list[dict]:
-    sql = """
-        SELECT chunk_id AS id, main_text, book_id, content_type,
-               closest_title, toc_path, search_text, other_metadata, chunk_size,
-               1 - (embedding_values <=> %s::vector) AS score
-        FROM text_chunks
-        ORDER BY embedding_values <=> %s::vector
-        LIMIT %s
-    """
-    vec_str = "[" + ",".join(str(v) for v in query_vec) + "]"
-    rows = execute_query(sql, (vec_str, vec_str, k), fetch_all=True)
-    for r in (rows or []):
-        r["type"] = "text"
-    return rows or []
-
-
-def _text_keyword_search(tokens: list[str], k: int = 5) -> list[dict]:
-    if not tokens:
-        return []
-    tsquery_str = " | ".join(f"'{t}'" for t in tokens)
+def _fetch_text_keyword_rows(tsquery_str: str, k: int) -> list[dict]:
     sql = """
         SELECT chunk_id AS id, main_text, book_id, content_type,
                closest_title, toc_path, search_text, other_metadata, chunk_size,
@@ -57,6 +35,71 @@ def _text_keyword_search(tokens: list[str], k: int = 5) -> list[dict]:
     for r in (rows or []):
         r["type"] = "text"
     return rows or []
+
+
+def _fetch_image_keyword_rows(tsquery_str: str, k: int) -> list[dict]:
+    sql = """
+        SELECT image_id AS id, title, image_uri, local_path, alt_text, caption,
+               book_id, closest_title, toc_path, search_text, format,
+               ts_rank(ts_vector, to_tsquery('simple', %s)) AS score
+        FROM image_chunks
+        WHERE ts_vector @@ to_tsquery('simple', %s)
+        ORDER BY score DESC
+        LIMIT %s
+    """
+    rows = execute_query(sql, (tsquery_str, tsquery_str, k), fetch_all=True)
+    for r in (rows or []):
+        r["type"] = "image"
+    return rows or []
+
+
+# --------------- 四路检索 ---------------
+
+def _text_vector_search(
+    query_vec: list[float],
+    k: int = 5,
+    *,
+    content_types: list[str] | None = None,
+) -> list[dict]:
+    vec_str = "[" + ",".join(str(v) for v in query_vec) + "]"
+    if content_types:
+        sql = """
+            SELECT chunk_id AS id, main_text, book_id, content_type,
+                   closest_title, toc_path, search_text, other_metadata, chunk_size,
+                   1 - (embedding_values <=> %s::vector) AS score
+            FROM text_chunks
+            WHERE content_type = ANY(%s::text[])
+            ORDER BY embedding_values <=> %s::vector
+            LIMIT %s
+        """
+        rows = execute_query(
+            sql, (vec_str, content_types, vec_str, k), fetch_all=True
+        )
+    else:
+        sql = """
+            SELECT chunk_id AS id, main_text, book_id, content_type,
+                   closest_title, toc_path, search_text, other_metadata, chunk_size,
+                   1 - (embedding_values <=> %s::vector) AS score
+            FROM text_chunks
+            ORDER BY embedding_values <=> %s::vector
+            LIMIT %s
+        """
+        rows = execute_query(sql, (vec_str, vec_str, k), fetch_all=True)
+    for r in (rows or []):
+        r["type"] = "text"
+    return rows or []
+
+
+def _text_keyword_search(query: str, k: int = 5) -> list[dict]:
+    tsq = build_tsquery_strict(query)
+    if not tsq:
+        return []
+    rows = _fetch_text_keyword_rows(tsq, k)
+    if not rows:
+        loose = build_tsquery_loose(query)
+        if loose and loose != tsq:
+            rows = _fetch_text_keyword_rows(loose, k)
+    return rows
 
 
 def _image_vector_search(query_vec: list[float], k: int = 5) -> list[dict]:
@@ -75,30 +118,16 @@ def _image_vector_search(query_vec: list[float], k: int = 5) -> list[dict]:
     return rows or []
 
 
-def _image_keyword_search(tokens: list[str], k: int = 5) -> list[dict]:
-    if not tokens:
+def _image_keyword_search(query: str, k: int = 5) -> list[dict]:
+    tsq = build_tsquery_strict(query)
+    if not tsq:
         return []
-    tsquery_str = " | ".join(f"'{t}'" for t in tokens)
-    sql = """
-        SELECT image_id AS id, title, image_uri, local_path, alt_text, caption,
-               book_id, closest_title, toc_path, search_text, format,
-               ts_rank(ts_vector, to_tsquery('simple', %s)) AS score
-        FROM image_chunks
-        WHERE ts_vector @@ to_tsquery('simple', %s)
-        ORDER BY score DESC
-        LIMIT %s
-    """
-    rows = execute_query(sql, (tsquery_str, tsquery_str, k), fetch_all=True)
-    for r in (rows or []):
-        r["type"] = "image"
+    rows = _fetch_image_keyword_rows(tsq, k)
+    if not rows:
+        loose = build_tsquery_loose(query)
+        if loose and loose != tsq:
+            rows = _fetch_image_keyword_rows(loose, k)
     return rows or []
-
-
-# --------------- RRF 融合 ---------------
-
-def _make_key(row: dict) -> str:
-    """用 type:id 作为去重键，避免跨表 ID 碰撞"""
-    return f"{row['type']}:{row['id']}"
 
 
 def _has_col_data(table: str, column: str) -> bool:
@@ -110,32 +139,9 @@ def _has_col_data(table: str, column: str) -> bool:
     return bool(row)
 
 
-def _rrf_fuse(result_lists: list[list[dict]], k_final: int) -> list[dict]:
-    """对多路排序结果做 RRF 融合，返回 Top-k_final"""
-    scores: dict[str, float] = {}
-    row_map: dict[str, dict] = {}
-
-    for result_list in result_lists:
-        for rank, row in enumerate(result_list, start=1):
-            key = _make_key(row)
-            scores[key] = scores.get(key, 0.0) + 1.0 / (RRF_K + rank)
-            if key not in row_map:
-                row_map[key] = row
-
-    sorted_keys = sorted(scores, key=lambda k: scores[k], reverse=True)
-
-    results = []
-    for key in sorted_keys[:k_final]:
-        row = dict(row_map[key])
-        row["rrf_score"] = scores[key]
-        results.append(row)
-    return results
-
-
 # --------------- 关联数据补充 ---------------
 
 def _fetch_relations(main_ids: list[str]) -> list[dict]:
-    """双向查询 relations 表，返回涉及 main_ids 的所有关联记录"""
     if not main_ids:
         return []
     sql = """
@@ -186,7 +192,6 @@ def _is_image_type(chunk_type: str) -> bool:
 
 
 def _enrich_with_relations(main_results: list[dict]) -> dict:
-    """查 relations 表补充关联块，返回完整的 items + relations 结构"""
     main_ids = [r["id"] for r in main_results]
     main_set = set(main_ids)
 
@@ -227,9 +232,8 @@ def _enrich_with_relations(main_results: list[dict]) -> dict:
     return {"items": items, "relations": filtered_relations}
 
 
-# --------------- 构建标准 item ---------------
-
 def _build_item(row: dict, is_main: bool) -> dict:
+    strip_fuse_debug_fields(row)
     item_type = row["type"]
     if item_type == "text":
         content = row.get("main_text", "")
@@ -278,19 +282,46 @@ def hybrid_search(
     返回 {"items": [...], "relations": [...]}。
     with_relations=False 时 relations 为空列表。
     """
+    intent = detect_query_intent(query)
     query_vec = embed_query(query)
-    tokens = _tokenize(query)
 
-    text_vec = _text_vector_search(query_vec, k=k_vector) \
-        if _has_col_data("text_chunks", "embedding_values") else []
-    text_kw = _text_keyword_search(tokens, k=k_keyword) \
-        if _has_col_data("text_chunks", "ts_vector") else []
-    img_vec = _image_vector_search(query_vec, k=k_vector) \
-        if _has_col_data("image_chunks", "embedding_values") else []
-    img_kw = _image_keyword_search(tokens, k=k_keyword) \
-        if _has_col_data("image_chunks", "ts_vector") else []
+    has_text_vec = _has_col_data("text_chunks", "embedding_values")
+    has_text_kw = _has_col_data("text_chunks", "ts_vector")
+    has_img_vec = _has_col_data("image_chunks", "embedding_values")
+    has_img_kw = _has_col_data("image_chunks", "ts_vector")
 
-    main_results = _rrf_fuse([text_vec, text_kw, img_vec, img_kw], k_final)
+    if has_text_vec:
+        general_tv = _text_vector_search(query_vec, k=k_vector)
+        if intent.wants_original_text and intent.wants_institution:
+            orig_tv = _text_vector_search(
+                query_vec,
+                k=min(k_vector, 8),
+                content_types=[ORIGINAL_TEXT_CONTENT_TYPE],
+            )
+            text_vec = merge_text_vector_lanes(orig_tv, general_tv, k_vector)
+        else:
+            text_vec = general_tv
+    else:
+        text_vec = []
+
+    text_kw = _text_keyword_search(query, k=k_keyword) if has_text_kw else []
+    img_vec = _image_vector_search(query_vec, k=k_vector) if has_img_vec else []
+    img_kw = _image_keyword_search(query, k=k_keyword) if has_img_kw else []
+
+    w_tv, w_tk, w_iv, w_ik = lane_weights(has_img_vec)
+
+    main_results = rrf_fuse(
+        [text_vec, text_kw, img_vec, img_kw],
+        k_final * 2 if (intent.wants_original_text and intent.wants_institution) else k_final,
+        weights=[w_tv, w_tk, w_iv, w_ik],
+        lane_names=["text_vec", "text_kw", "img_vec", "img_kw"],
+    )
+    main_results = apply_original_text_boost(main_results, intent)
+
+    max_images = k_final
+    if intent.wants_original_text and intent.wants_institution:
+        max_images = 1
+    main_results = apply_image_slot_limit(main_results, k_final, max_images)
 
     if not main_results:
         return {"items": [], "relations": []}
@@ -300,3 +331,12 @@ def hybrid_search(
 
     items = [_build_item(r, is_main=True) for r in main_results]
     return {"items": items, "relations": []}
+
+
+# --- 供脚本/调试：与历史导入名兼容 ---
+_tokenize = tokenize_query_display
+_rrf_fuse = rrf_fuse
+_lane_weights = lane_weights
+_merge_text_vector_lanes = merge_text_vector_lanes
+_apply_original_text_boost = apply_original_text_boost
+_apply_image_slot_limit = apply_image_slot_limit

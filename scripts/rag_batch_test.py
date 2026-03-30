@@ -16,19 +16,19 @@ from scripts.retriever_test import run_single_query
 
 # ── 批量查询语句（按需修改）──
 QUERIES = [
-    "如木+伏念什么？什么意思？相关的专业术语有哪些？",
-    "蝉肚绰幕”是什么？",
-    "《营造法式》有关‘取正之制’的原文是什么？",
+    "木+龙念什么字？",
+    "七朱八白”是什么术语？",
+    "《营造法式》有关‘造梁之制’的原文是什么？",
     "若地势偏邪，既以景表望筒取正，四方或有可疑处，则更以水池景表较",
-    "如栱是由哪些工具做成的？建造一个古建筑要多人人工？安装顺序是什么？"
+    "栱是由哪些工具做成的？安装顺序是什么？"
 ]
 
 # ── 与 `python scripts/test.py` 对应的参数 ──
 PARAMS = dict(
     top_k=3,
-    final_k=5,
-    relations=False,
-    steps=False,
+    final_k=3,
+    relations=True,
+    steps=True,
     prompt_preview_chars=2000,
 )
 

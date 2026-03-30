@@ -3,11 +3,11 @@ import os
 import numpy as np
 from openai import OpenAI
 
-EMBEDDING_BASE_URL = os.getenv("DASHSCOPE_BASE_URL")
+EMBEDDING_BASE_URL = os.getenv("SEU_BASE_URL")
 EMBEDDING_MODEL = "text-embedding-v4"
 EMBEDDING_DIM = 1024
 
-_client = OpenAI(api_key=os.getenv("DASHSCOPE_API_KEY", ""), base_url=EMBEDDING_BASE_URL)
+_client = OpenAI(api_key=os.getenv("SEU_API_KEY", ""), base_url=EMBEDDING_BASE_URL)
 
 
 def _normalize(vec: list[float]) -> list[float]:
