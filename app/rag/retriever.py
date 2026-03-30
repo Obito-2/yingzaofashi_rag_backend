@@ -7,7 +7,7 @@ from langsmith import traceable
 from app.connect import execute_query
 from app.rag.embedding import embed_query
 
-_DICT_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "custon_char.text")
+_DICT_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "custom_char.text")
 if os.path.exists(_DICT_PATH):
     jieba.load_userdict(_DICT_PATH)
 

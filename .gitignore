@@ -1,9 +1,8 @@
+# yingzaofashi_rag_backend — Python / FastAPI / LangChain RAG
 
 # === 用户自定义及项目清理 ===
 .cursor/
-prd/
-# 那个奇怪的 typo 文件
-"=1.0,"
+
 
 # === 核心目录 (针对已经在根目录产生的虚拟环境软链接) ===
 bin/
@@ -18,7 +17,7 @@ share/
 venv/
 env/
 ENV/
-.python-version
+# .python-version 由 uv pin 生成，建议纳入版本控制以统一本地/CI Python 版本
 
 # Python cache / bytecode
 __pycache__/
@@ -61,6 +60,11 @@ tmp/
 !.env.example
 .pgpass
 db/
+
+# 本地 SQLite / 临时库文件（主库为 PostgreSQL，此处防误提交本地测试库）
+*.sqlite
+*.sqlite3
+*.db
 
 
 # IDE / editor

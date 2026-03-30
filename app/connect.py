@@ -6,13 +6,6 @@ from psycopg2 import pool
 from psycopg2.extras import RealDictCursor  # 返回字典格式的结果
 from urllib.parse import urlparse
 
-# # 从环境变量读取数据库配置（Sealos 会自动注入）
-# DB_HOST = os.getenv("DB_HOST", "test-db-postgresql.ns-q5nnz4bx.svc")
-# DB_PORT = os.getenv("DB_PORT", "5432")
-# DB_NAME = os.getenv("DB_NAME", "postgres")
-# DB_USER = os.getenv("DB_USER", "postgres")
-# DB_PASSWORD = os.getenv("DB_PASSWORD", "lchgjt88")
-
 # 直接粘贴最新连接地址到这里即可，或通过环境变量 DB_URL 覆盖
 _DEFAULT_URL = "postgresql://postgres:lchgjt88@dbconn.sealoshzh.site:49571/postgres"
 
