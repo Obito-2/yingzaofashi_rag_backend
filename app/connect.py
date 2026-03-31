@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 _DEFAULT_URL = "postgresql://postgres:lchgjt88@dbconn.sealoshzh.site:49571/postgres"
 
 _url = urlparse(os.getenv("DB_URL", _DEFAULT_URL))
+
 DB_HOST     = _url.hostname
 DB_PORT     = str(_url.port or 5432)
 DB_NAME     = _url.path.lstrip("/") or "postgres"
