@@ -1,6 +1,9 @@
 """
-检索器离线评测：读取 jsonl（query + evidence_chunk_id），调用 hybrid_search，
+检索器离线评测：读取 jsonl（query + evidence_chunk_id），调用检索入口，
 计算 HR@3/5、MRR、NDCG@3/5，分层统计，检索延迟汇总。
+
+- 默认 --backend v1：hybrid_search（四路，含 img_vec）。
+- --backend v2：hybrid_search_v2；可加 --intent-llm 先走 LLM 意图再检索。
 """
 from __future__ import annotations
 
@@ -8,6 +11,7 @@ import argparse
 import csv
 import json
 import math
+import re
 import statistics
 import sys
 import time
@@ -23,10 +27,12 @@ from dotenv import load_dotenv
 load_dotenv(PROJECT_ROOT / ".env")
 
 from app.rag.retriever import hybrid_search
+from app.rag_v2.hybrid_search import hybrid_search_v2, hybrid_search_v2_with_llm
 
 K_VECTOR = 5
 K_KEYWORD = 5
 K_FINAL = 5
+K_PER_RETRIEVER = 5
 
 
 def _log2(x: float) -> float:
@@ -78,6 +84,16 @@ def _percentile_linear(sorted_vals: list[float], p: float) -> float:
 
 def _mean(xs: list[float]) -> float:
     return sum(xs) / len(xs) if xs else 0.0
+
+
+def _safe_run_name(name: str) -> str:
+    """用于子目录名，避免路径穿越与非法字符。"""
+    s = name.strip()
+    if not s:
+        return "run"
+    s = s.replace("..", "_").replace("/", "_").replace("\\", "_")
+    s = re.sub(r'[<>:"|?*]', "_", s)
+    return (s[:120] or "run").strip("._") or "run"
 
 
 def _aggregate_metrics(rows: list[dict]) -> dict:
@@ -140,13 +156,28 @@ def _write_report_md(
 ) -> None:
     o = summary["overall"]
     lat = summary["latency_ms"]
+    ret = summary["retrieval"]
+    backend = ret.get("backend", "v1")
+    if backend == "v2":
+        k_line = (
+            f"- **backend** = v2，**intent_llm** = {ret.get('intent_llm', False)}，"
+            f"`k_per_retriever` = {ret.get('k_per_retriever')}, `k_final` = {ret.get('k_final')}"
+        )
+        note = ret.get("note_compare")
+        if note:
+            k_line += f"\n- {note}"
+    else:
+        k_line = (
+            f"- **backend** = v1，`k_vector` = {ret['k_vector']}, "
+            f"`k_keyword` = {ret['k_keyword']}, `k_final` = {ret['k_final']}"
+        )
     lines = [
         "# 检索器离线评测报告（自动生成）",
         "",
         "## 实验设置",
         "",
         f"- 样本数 **N** = {summary['n']}",
-        f"- `k_vector` = {summary['retrieval']['k_vector']}, `k_keyword` = {summary['retrieval']['k_keyword']}, `k_final` = {summary['retrieval']['k_final']}",
+        k_line,
         "- `with_relations` = false",
         "",
         "## 准确性（总体）",
@@ -217,12 +248,54 @@ def _write_report_md(
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _run_retrieval(
+    query: str,
+    *,
+    backend: str,
+    intent_llm: bool,
+    k_vector: int,
+    k_keyword: int,
+    k_final: int,
+    k_per_retriever: int,
+) -> dict:
+    if backend == "v1":
+        return hybrid_search(
+            query,
+            k_vector=k_vector,
+            k_keyword=k_keyword,
+            k_final=k_final,
+            with_relations=False,
+        )
+    if intent_llm:
+        return hybrid_search_v2_with_llm(
+            query,
+            use_llm=True,
+            k_per_retriever=k_per_retriever,
+            k_final=k_final,
+            with_relations=False,
+        )
+    return hybrid_search_v2(
+        query,
+        intent_result=None,
+        k_per_retriever=k_per_retriever,
+        k_final=k_final,
+        with_relations=False,
+    )
+
+
 def run_eval(
     input_path: Path,
     detail_jsonl: Path,
     detail_csv: Path | None,
     summary_json: Path,
     report_md: Path | None,
+    *,
+    backend: str = "v1",
+    intent_llm: bool = False,
+    k_vector: int = K_VECTOR,
+    k_keyword: int = K_KEYWORD,
+    k_final: int = K_FINAL,
+    k_per_retriever: int = K_PER_RETRIEVER,
 ) -> dict:
     records = _load_jsonl(input_path)
     detail_rows: list[dict] = []
@@ -260,12 +333,14 @@ def run_eval(
             continue
 
         t0 = time.perf_counter()
-        result = hybrid_search(
+        result = _run_retrieval(
             query,
-            k_vector=K_VECTOR,
-            k_keyword=K_KEYWORD,
-            k_final=K_FINAL,
-            with_relations=False,
+            backend=backend,
+            intent_llm=intent_llm,
+            k_vector=k_vector,
+            k_keyword=k_keyword,
+            k_final=k_final,
+            k_per_retriever=k_per_retriever,
         )
         elapsed = time.perf_counter() - t0
         latencies.append(elapsed)
@@ -284,7 +359,7 @@ def run_eval(
             "rank": rank,
             "hr3": _hr_at_k(rank, 3),
             "hr5": _hr_at_k(rank, 5),
-            "mrr": _mrr(rank, K_FINAL),
+            "mrr": _mrr(rank, k_final),
             "ndcg3": _ndcg_at_k(rank, 3),
             "ndcg5": _ndcg_at_k(rank, 5),
             "latency_s": round(elapsed, 6),
@@ -303,15 +378,27 @@ def run_eval(
         {"query": r["query"], "evidence_chunk_id": r["evidence_chunk_id"]}
         for r in missed[:8]
     ]
+    if backend == "v2":
+        retrieval_meta = {
+            "backend": "v2",
+            "intent_llm": intent_llm,
+            "k_per_retriever": k_per_retriever,
+            "k_final": k_final,
+            "with_relations": False,
+            "note_compare": "v2 不含 img_vec 路，与 v1 四路混合检索指标仅作参考对比",
+        }
+    else:
+        retrieval_meta = {
+            "backend": "v1",
+            "k_vector": k_vector,
+            "k_keyword": k_keyword,
+            "k_final": k_final,
+            "with_relations": False,
+        }
     summary = {
         "n": len(detail_rows),
         "input": str(input_path.resolve()),
-        "retrieval": {
-            "k_vector": K_VECTOR,
-            "k_keyword": K_KEYWORD,
-            "k_final": K_FINAL,
-            "with_relations": False,
-        },
+        "retrieval": retrieval_meta,
         "overall": {k: v for k, v in overall.items() if k != "n"},
         "overall_n": overall["n"],
         "missed_top5_count": len(missed),
@@ -374,42 +461,90 @@ def main() -> None:
         help="输入 jsonl（含 query、evidence_chunk_id）",
     )
     parser.add_argument(
+        "--run-name",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help="批次名：未单独指定各输出路径时，写入 exper_data/<NAME>/，避免覆盖历史结果",
+    )
+    parser.add_argument(
         "--detail-jsonl",
         type=Path,
-        default=PROJECT_ROOT / "exper_data" / "retriever_eval_detail.jsonl",
-        help="逐条明细 JSONL 输出路径",
+        default=None,
+        help="逐条明细 JSONL 输出路径（默认：exper_data[/批次]/retriever_eval_detail.jsonl）",
     )
     parser.add_argument(
         "--detail-csv",
         type=Path,
-        default=PROJECT_ROOT / "exper_data" / "retriever_eval_detail.csv",
-        help="逐条明细 CSV 输出路径（与 --no-csv 互斥）",
+        default=None,
+        help="逐条明细 CSV 输出路径（默认：exper_data[/批次]/retriever_eval_detail.csv）",
     )
     parser.add_argument(
         "--summary-json",
         type=Path,
-        default=PROJECT_ROOT / "exper_data" / "retriever_eval_summary.json",
-        help="汇总 JSON",
+        default=None,
+        help="汇总 JSON（默认：exper_data[/批次]/retriever_eval_summary.json）",
     )
     parser.add_argument(
         "--report-md",
         type=Path,
-        default=PROJECT_ROOT / "exper_data" / "retriever_eval_report.md",
-        help="Markdown 报告（总体 + 分层 + 延迟）",
+        default=None,
+        help="Markdown 报告（默认：exper_data[/批次]/retriever_eval_report.md）",
     )
     parser.add_argument("--no-report", action="store_true", help="不生成 Markdown 报告")
     parser.add_argument("--no-csv", action="store_true", help="不生成 CSV 明细")
+    parser.add_argument(
+        "--backend",
+        choices=["v1", "v2"],
+        default="v1",
+        help="检索后端：v1=hybrid_search（四路含 img_vec）；v2=hybrid_search_v2（五路关键词+向量，无 img_vec）",
+    )
+    parser.add_argument(
+        "--intent-llm",
+        action="store_true",
+        help="仅 --backend v2：先 LLM 意图识别再检索（耗时含意图 API）",
+    )
+    parser.add_argument("--k-final", type=int, default=K_FINAL, help="融合后取前 k 条（v1/v2 共用）")
+    parser.add_argument(
+        "--k-per-retriever",
+        type=int,
+        default=K_PER_RETRIEVER,
+        help="v2 每路检索条数（--backend v2）",
+    )
+    parser.add_argument("--k-vector", type=int, default=K_VECTOR, help="v1 向量路每路条数")
+    parser.add_argument("--k-keyword", type=int, default=K_KEYWORD, help="v1 关键词路每路条数")
     args = parser.parse_args()
 
-    csv_path = None if args.no_csv else args.detail_csv
-    report = None if args.no_report else args.report_md
+    if args.intent_llm and args.backend != "v2":
+        parser.error("--intent-llm 仅可与 --backend v2 同用")
+
+    out_base = PROJECT_ROOT / "exper_data"
+    if args.run_name:
+        out_base = out_base / _safe_run_name(args.run_name)
+
+    detail_jsonl = args.detail_jsonl or (out_base / "retriever_eval_detail.jsonl")
+    detail_csv = args.detail_csv or (out_base / "retriever_eval_detail.csv")
+    summary_json = args.summary_json or (out_base / "retriever_eval_summary.json")
+    report_md = args.report_md or (out_base / "retriever_eval_report.md")
+
+    if args.run_name:
+        print(f"输出目录（批次）: {out_base}", file=sys.stderr)
+
+    csv_path = None if args.no_csv else detail_csv
+    report = None if args.no_report else report_md
 
     summary = run_eval(
         input_path=args.input,
-        detail_jsonl=args.detail_jsonl,
+        detail_jsonl=detail_jsonl,
         detail_csv=csv_path,
-        summary_json=args.summary_json,
+        summary_json=summary_json,
         report_md=report,
+        backend=args.backend,
+        intent_llm=args.intent_llm,
+        k_vector=args.k_vector,
+        k_keyword=args.k_keyword,
+        k_final=args.k_final,
+        k_per_retriever=args.k_per_retriever,
     )
 
     print(json.dumps(summary, ensure_ascii=False, indent=2))
