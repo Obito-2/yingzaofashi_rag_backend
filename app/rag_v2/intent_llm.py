@@ -14,6 +14,7 @@ import os
 import re
 from typing import Any
 
+from langsmith import traceable
 from openai import OpenAI
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.MULTILINE)
@@ -55,25 +56,60 @@ JSON 字段（必须齐全）：
 - "is_complex": boolean，是否为需拆成多子问题的复合问法
 - "sub_queries": 当 is_complex 为 true 时必填；每项含 "query","type","filters","enabled_retrievers"，结构同单意图
 
+检索器语义说明：
+- text_toc_kw：按目录路径/卷章关键词检索，适合含"第X卷""XX作制度"等章节词的查询
+- text_vec：文本向量语义检索，适合模糊语义匹配
+- text_kw：文本正文关键词检索，适合精确词汇匹配
+- img_toc_kw：图像目录关键词检索
+- img_content_kw：图像内容/描述关键词检索
+- relation：触发图文关联扩展（后置增强，非主检索路），找图时可加入
+
 documents.id（book_ids 只能使用这些语义 id，无法确定时 book_ids 用 []）：
-- terms_brief：《法式》术语简要
-- yzfs_liang：梁思成注释《营造法式》
-- yzfs_interpretation_rev：《营造法式》解读（修订版）
-- yzfs_wang：王贵祥译注《营造法式》
-- rare_chars：《法式》生僻字库
+- terms_brief：《法式》术语简要【数据特征：content_type 全部为 interpretation】
+- yzfs_liang：梁思成注释《营造法式》【含 original_text / annotation / modern_translation / others_text】
+- yzfs_interpretation_rev：《营造法式》解读（修订版）【只有 annotation 和 interpretation，无 original_text 和 modern_translation】
+- yzfs_wang：王贵祥译注《营造法式》【含 original_text / interpretation / modern_translation / others_text】
+- rare_chars：《法式》生僻字库【数据特征：content_type 全部为 annotation】
 
-content_types 仅 text 有效：original_text, annotation, modern_translation, interpretation, others_text。
-relation_types：illustrates, annotates。
+content_types 仅 text 检索有效：original_text, annotation, modern_translation, interpretation, others_text。
+relation_types：illustrates（图文配对）, annotates（注解关联）。
 
-规则简述：
-- 生僻字、部件：type 用 rare_char，book_ids 常含 rare_chars；检索路可 text_vec,text_kw,text_toc_kw。
-- 术语释义：term_explain，可含 terms_brief。
-- 原文/译文/出处：original_and_translation，content_types 可含 original_text、modern_translation。
-- 找图、示意图：image_by_text，**不要**启用文本表相关路时只开 img_toc_kw, img_content_kw。
-- 指定译本/章节：specific_book，book_ids 填对应译本 id。
-- 多跳/对比/图文混合：is_complex true，用 sub_queries 拆分，每子项独立 filters 与 enabled_retrievers。
+规则（严格遵守）：
+- 生僻字、读音、部件拆字查询：type=rare_char，book_ids=["rare_chars"]，content_types=["annotation"]，enabled_retrievers=["text_vec","text_kw"]。
+- 术语释义、定义查询：type=term_explain，book_ids=["terms_brief"]，content_types=["interpretation"]，enabled_retrievers=["text_vec","text_kw"]。
+- 查原文（法式原文/条文）：type=original_and_translation，content_types=["original_text"]，book_ids=[]，enabled_retrievers=["text_toc_kw","text_vec","text_kw"]。
+- 查今译/白话译文：type=original_and_translation，content_types=["modern_translation"]，book_ids 排除 yzfs_interpretation_rev，enabled_retrievers=["text_toc_kw","text_vec","text_kw"]。
+- 查原文+译文/出处对照：type=original_and_translation，content_types=["original_text","modern_translation"]，book_ids 排除 yzfs_interpretation_rev，enabled_retrievers=["text_toc_kw","text_vec","text_kw"]。
+- 找图、示意图、插图：type=image_by_text，enabled_retrievers=["img_toc_kw","img_content_kw","relation"]，不开任何文本路，book_ids 可限定来源书目。
+- 指定译本/版本/作者的查询：type=specific_book，book_ids 填对应译本 id，content_types 按问题需求设置，enabled_retrievers=["text_toc_kw","text_vec","text_kw"]。
+- 多跳/对比/图文混合：is_complex=true，用 sub_queries 拆分，每子项独立设置 filters 与 enabled_retrievers。
 
-非复合问题时 is_complex 为 false，sub_queries 为 []。复合问题时 intents 可置一条占位，以 sub_queries 为准。"""
+注意：yzfs_interpretation_rev 无 original_text 和 modern_translation，若用户要查这两种内容请勿将其加入 book_ids。
+非复合问题时 is_complex 为 false，sub_queries 为 []。复合问题时 intents 填一条 type=complex 占位，以 sub_queries 为准。
+
+示例：
+
+用户问题：拆字为金巢的字怎么读，是什么意思？
+{"query":"拆字为金巢的字怎么读，是什么意思？","intents":[{"type":"rare_char","filters":{"book_ids":["rare_chars"],"content_types":["annotation"],"relation_types":[]},"enabled_retrievers":["text_vec","text_kw"]}],"is_complex":false,"sub_queries":[]}
+
+用户问题：琴面昂是什么意思？
+{"query":"琴面昂是什么意思？","intents":[{"type":"term_explain","filters":{"book_ids":["terms_brief"],"content_types":["interpretation"],"relation_types":[]},"enabled_retrievers":["text_vec","text_kw"]}],"is_complex":false,"sub_queries":[]}
+
+用户问题：垒脊瓦的定义是什么？
+{"query":"垒脊瓦的定义是什么？","intents":[{"type":"term_explain","filters":{"book_ids":["terms_brief"],"content_types":["interpretation"],"relation_types":[]},"enabled_retrievers":["text_vec","text_kw"]}],"is_complex":false,"sub_queries":[]}
+
+用户问题：营造法式第四卷大木作制度中斗栱的原文是什么？
+{"query":"营造法式第四卷大木作制度中斗栱的原文是什么？","intents":[{"type":"original_and_translation","filters":{"book_ids":[],"content_types":["original_text"],"relation_types":[]},"enabled_retrievers":["text_toc_kw","text_vec","text_kw"]}],"is_complex":false,"sub_queries":[]}
+
+用户问题：找一下乌头门的示意图
+{"query":"找一下乌头门的示意图","intents":[{"type":"image_by_text","filters":{"book_ids":[],"content_types":[],"relation_types":["illustrates"]},"enabled_retrievers":["img_toc_kw","img_content_kw","relation"]}],"is_complex":false,"sub_queries":[]}
+
+用户问题：梁思成对斗栱的解读是什么？
+{"query":"梁思成对斗栱的解读是什么？","intents":[{"type":"specific_book","filters":{"book_ids":["yzfs_liang"],"content_types":["interpretation"],"relation_types":[]},"enabled_retrievers":["text_toc_kw","text_vec","text_kw"]}],"is_complex":false,"sub_queries":[]}
+
+用户问题：给我找斗栱的原文，以及对应的插图
+{"query":"给我找斗栱的原文，以及对应的插图","intents":[{"type":"complex","filters":{"book_ids":[],"content_types":[],"relation_types":[]},"enabled_retrievers":[]}],"is_complex":true,"sub_queries":[{"query":"斗栱原文","type":"original_and_translation","filters":{"book_ids":[],"content_types":["original_text"],"relation_types":[]},"enabled_retrievers":["text_toc_kw","text_vec","text_kw"]},{"query":"斗栱插图","type":"image_by_text","filters":{"book_ids":[],"content_types":[],"relation_types":["illustrates"]},"enabled_retrievers":["img_toc_kw","img_content_kw","relation"]}]}
+"""
 
 
 def _parse_json_content(text: str) -> dict[str, Any] | None:
@@ -103,6 +139,7 @@ def _parse_json_content(text: str) -> dict[str, Any] | None:
     return None
 
 
+@traceable(name="recognize_intent_llm", run_type="llm")
 def recognize_intent_llm(user_query: str) -> dict[str, Any]:
     """
     调用轻量 LLM 得到意图 JSON dict；失败或空查询返回 {}。

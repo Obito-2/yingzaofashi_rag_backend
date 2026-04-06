@@ -4,6 +4,8 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
+from langsmith import traceable
+
 from app.connect import execute_query
 from app.rag.embedding import embed_query
 from app.rag_v2.fusion import lane_weights_five, rrf_fuse_v2, rrf_merge_subquery_results
@@ -60,6 +62,7 @@ def _col_flags() -> tuple[bool, bool, bool, bool, bool]:
     return has_text_vec, has_text_ts, has_text_toc, has_img_ts, has_img_toc
 
 
+@traceable(name="rag_v2_parallel_main", run_type="retriever")
 def _run_parallel_main(
     query: str,
     intent: SingleIntentBlock,
@@ -139,6 +142,7 @@ def _run_parallel_main(
     return fused, debug
 
 
+@traceable(name="hybrid_search_v2", run_type="retriever")
 def hybrid_search_v2(
     query: str,
     intent_result: dict[str, Any] | None = None,
@@ -258,6 +262,7 @@ def _finalize_output(
     return enriched
 
 
+@traceable(name="hybrid_search_v2_with_llm", run_type="retriever")
 def hybrid_search_v2_with_llm(
     query: str,
     *,

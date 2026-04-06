@@ -518,7 +518,7 @@ def main() -> None:
     if args.intent_llm and args.backend != "v2":
         parser.error("--intent-llm 仅可与 --backend v2 同用")
 
-    out_base = PROJECT_ROOT / "exper_data"
+    out_base = PROJECT_ROOT / "exper_reports"
     if args.run_name:
         out_base = out_base / _safe_run_name(args.run_name)
 
