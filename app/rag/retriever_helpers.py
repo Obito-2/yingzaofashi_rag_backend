@@ -9,7 +9,9 @@ from dataclasses import dataclass
 import jieba
 from langsmith import traceable
 
-_DICT_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "custom_char.text")
+_DICT_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "..", "resources", "jieba_userdict.txt"
+)
 if os.path.exists(_DICT_PATH):
     jieba.load_userdict(_DICT_PATH)
 

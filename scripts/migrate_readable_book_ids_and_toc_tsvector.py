@@ -27,7 +27,9 @@ _UUID_RE = re.compile(
 
 
 def _load_jieba_userdict() -> None:
-    path = os.path.join(os.path.dirname(__file__), "..", "custom_char.text")
+    path = os.path.join(
+        os.path.dirname(__file__), "..", "resources", "jieba_userdict.txt"
+    )
     if os.path.exists(path):
         jieba.load_userdict(path)
 
