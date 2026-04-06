@@ -7,7 +7,7 @@ from psycopg2.extras import RealDictCursor  # 返回字典格式的结果
 from urllib.parse import urlparse
 
 # 直接粘贴最新连接地址到这里即可，或通过环境变量 DB_URL 覆盖
-_DEFAULT_URL = "postgresql://postgres:lchgjt88@dbconn.sealoshzh.site:49571/postgres"
+_DEFAULT_URL = "postgresql://postgres:lchgjt88@dbconn.sealoshzh.site:47025/postgres"
 
 _url = urlparse(os.getenv("DB_URL", _DEFAULT_URL))
 
@@ -18,15 +18,19 @@ DB_USER     = _url.username
 DB_PASSWORD = _url.password
 
 # 创建连接池（最小1个连接，最大10个连接）
-connection_pool = pool.SimpleConnectionPool(
-    1, 10,
-    host=DB_HOST,
-    port=DB_PORT,
-    dbname=DB_NAME,
-    user=DB_USER,
-    password=DB_PASSWORD,
-    cursor_factory=RealDictCursor  # 让查询结果以字典形式返回
-)
+try:
+    connection_pool = pool.SimpleConnectionPool(
+        1, 10,
+        host=DB_HOST,
+        port=DB_PORT,
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        cursor_factory=RealDictCursor  # 让查询结果以字典形式返回
+    )
+except psycopg2.OperationalError:
+    print("请检查数据库连接状态", file=sys.stderr)
+    raise SystemExit(1)
 
 def get_connection():
     """从连接池获取一个连接"""

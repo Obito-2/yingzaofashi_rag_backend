@@ -25,9 +25,9 @@ dependencies = [
     "tabulate==0.9.0",
     "langchain-core==0.3.83",
     "langchain-openai==0.3.18",
-    "langgraph==0.2.76",
+    "langgraph>=0.4.10",
     "langsmith==0.7.22",
-    "langgraph-cli[inmem]>=0.3.3",
+    "langgraph-cli[inmem]>=0.4.3",
 ]
 
 [tool.hatch.build.targets.wheel]
