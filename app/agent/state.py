@@ -21,3 +21,5 @@ class AgentState(TypedDict):
     citation_relations: list[dict]
     # True：Gate 判定无需检索（闲聊等），非检索失败
     skip_rag: bool
+    # 非空时表示 Gate 判定问题模糊，需向用户澄清，内容为澄清问题
+    clarification_question: str

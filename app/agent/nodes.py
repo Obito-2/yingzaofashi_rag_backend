@@ -22,7 +22,8 @@ from app.agent.prompts import (
     SUMMARIZE_SYSTEM,
 )
 from app.agent.state import CLUES_CHAR_THRESHOLD, MAX_RETRIEVE_DEPTH, AgentState
-from app.rag import retrieve_context_structured
+from app.rag import _enrich_items_metadata, _format_item
+from app.rag_v2 import hybrid_search_v2_with_llm
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -96,6 +97,8 @@ def _gate_llm() -> ChatOpenAI:
 
 class GateOutput(BaseModel):
     need_kb: bool = Field(description="是否需要检索《营造法式》知识库")
+    need_clarify: bool = Field(default=False, description="用户问题是否模糊需要澄清")
+    clarify_question: str = Field(default="", description="当 need_clarify=true 时向用户提出的澄清问题")
     thought: str = Field(description="简短推理")
 
 
@@ -137,7 +140,7 @@ def _parse_gate_output(raw: object) -> GateOutput:
 
 def gate_node(state: AgentState) -> dict:
     if not _agent_gate_enabled():
-        return {"skip_rag": False}
+        return {"skip_rag": False, "clarification_question": ""}
     llm = _gate_llm().with_structured_output(GateOutput)
     raw = llm.invoke(
         [
@@ -148,11 +151,16 @@ def gate_node(state: AgentState) -> dict:
     out = _parse_gate_output(raw)
     scratchpad = list(state.get("scratchpad") or [])
     scratchpad.append(f"[gate] {out.thought}")
-    return {"skip_rag": not out.need_kb, "scratchpad": scratchpad}
+    clarification_question = out.clarify_question.strip() if out.need_clarify else ""
+    return {
+        "skip_rag": not out.need_kb,
+        "clarification_question": clarification_question,
+        "scratchpad": scratchpad,
+    }
 
 
 def route_after_gate(state: AgentState) -> str:
-    if state.get("skip_rag"):
+    if state.get("skip_rag") or state.get("clarification_question"):
         return "done"
     return "retrieve"
 
@@ -168,21 +176,31 @@ def _merge_relations(existing: list[dict], new_rows: list[dict]) -> list[dict]:
         out.append(rel)
     return out
 
-# 数据库检索节点
+# 数据库检索节点（rag_v2：五路并行 + LLM 意图识别）
 def retrieve_node(state: AgentState) -> dict:
     with_relations = _env_bool("RAG_WITH_RELATIONS", False)
-    prompt_text, search_result = retrieve_context_structured(
+    result = hybrid_search_v2_with_llm(
         state["current_query"],
+        use_llm=True,
+        k_per_retriever=5,
+        k_final=10,
         with_relations=with_relations,
-        k_vector= 5, #向量召回数量
-        k_keyword= 5, #关键词召回数量
-        k_final= 3, #单轮rrf最终返回数量，不计算关联关系，如开启关系检索，最终数量应为k_final + n条关系
     )
-    items = search_result.get("items") or []
-    rels = search_result.get("relations") or []
+    items = result.get("items") or []
+    rels = result.get("relations") or []
+    debug = result.get("debug_info") or {}
 
     empty = len(items) == 0
     streak = state["empty_retrieval_streak"] + 1 if empty else 0
+
+    # 格式化 prompt_text（复用旧版格式化逻辑）
+    if items:
+        items = _enrich_items_metadata(items)
+        prompt_text = "\n\n".join(
+            _format_item(i + 1, item) for i, item in enumerate(items)
+        )
+    else:
+        prompt_text = ""
 
     citation_items = dict(state.get("citation_items") or {})
     for it in items:
@@ -199,12 +217,18 @@ def retrieve_node(state: AgentState) -> dict:
             f"--- 第{round_no}轮检索 (查询: {state['current_query']}) ---\n{prompt_text}"
         )
 
+    # intent_type 写入 scratchpad 便于追踪
+    scratchpad = list(state.get("scratchpad") or [])
+    intent_type = debug.get("intent_type", "")
+    scratchpad.append(f"[retrieve] intent={intent_type or 'unknown'}, hits={len(items)}")
+
     return {
         "depth": state.get("depth", 0) + 1,
         "clues": clues,
         "empty_retrieval_streak": streak,
         "citation_items": citation_items,
         "citation_relations": citation_relations,
+        "scratchpad": scratchpad,
     }
 
 
@@ -231,11 +255,11 @@ def summarize_node(state: AgentState) -> dict:
 
 
 class DecisionOutput(BaseModel):
-    sufficient: bool = Field(description="当前线索是否足以回答用户问题")
-    thought: str = Field(description="简短推理")
+    thought: str = Field(description="先推理：用户核心问题是什么、线索已覆盖哪些、还缺少哪些关键内容")
+    sufficient: bool = Field(description="基于 thought 的分析，当前线索是否足以回答用户问题")
     next_query: str | None = Field(
         default=None,
-        description="若需继续检索，给出下一条检索查询；否则可留空",
+        description="若需继续检索，根据 thought 中的缺口改写查询；否则为 null",
     )
 
 

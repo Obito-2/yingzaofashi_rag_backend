@@ -59,6 +59,7 @@ def initial_agent_state(user_input: str) -> AgentState:
         "citation_items": {},
         "citation_relations": [],
         "skip_rag": False,
+        "clarification_question": "",
     }
 
 #执行入口
