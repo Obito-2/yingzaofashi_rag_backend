@@ -21,27 +21,47 @@ DB_NAME     = _url.path.lstrip("/") or "postgres"
 DB_USER     = _url.username
 DB_PASSWORD = _url.password
 
-# 创建连接池（最小1个连接，最大10个连接）
-try:
-    connection_pool = pool.SimpleConnectionPool(
-        1, 10,
-        host=DB_HOST,
-        port=DB_PORT,
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        cursor_factory=RealDictCursor  # 让查询结果以字典形式返回
-    )
-except psycopg2.OperationalError:
-    print("请检查数据库连接状态", file=sys.stderr)
-    raise SystemExit(1)
+connection_pool: pool.SimpleConnectionPool | None = None
+
+
+class DatabaseUnavailableError(RuntimeError):
+    pass
+
+
+def _ensure_pool() -> pool.SimpleConnectionPool:
+    """
+    按需初始化连接池：
+    - 避免模块 import 阶段就强依赖数据库（会导致服务启动直接失败）
+    - 真正需要执行 SQL 时再建立连接
+    """
+    global connection_pool
+    if connection_pool is not None:
+        return connection_pool
+    try:
+        connection_pool = pool.SimpleConnectionPool(
+            1,
+            10,
+            host=DB_HOST,
+            port=DB_PORT,
+            dbname=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            cursor_factory=RealDictCursor,  # 让查询结果以字典形式返回
+        )
+        return connection_pool
+    except psycopg2.OperationalError as e:
+        raise DatabaseUnavailableError(
+            f"数据库连接失败：host={DB_HOST} port={DB_PORT} dbname={DB_NAME} user={DB_USER}；"
+            "请检查 DB_URL/网络/端口/服务是否已启动。"
+        ) from e
 
 def get_connection():
     """从连接池获取一个连接"""
-    return connection_pool.getconn()
+    return _ensure_pool().getconn()
 def release_connection(conn):
     """释放连接回连接池"""
-    connection_pool.putconn(conn)
+    p = _ensure_pool()
+    p.putconn(conn)
 
 def execute_query(query, params=None, fetch_one=False, fetch_all=False):
     """
@@ -50,7 +70,13 @@ def execute_query(query, params=None, fetch_one=False, fetch_all=False):
     fetch_all: 返回所有记录（字典列表）
     否则执行 INSERT/UPDATE/DELETE 并提交
     """
-    conn = get_connection()
+    try:
+        conn = get_connection()
+    except DatabaseUnavailableError:
+        raise
+    except psycopg2.OperationalError as e:
+        raise DatabaseUnavailableError("数据库连接失败，请检查连接配置与网络状态。") from e
+
     cur = conn.cursor()
     try:
         cur.execute(query, params)
@@ -62,6 +88,9 @@ def execute_query(query, params=None, fetch_one=False, fetch_all=False):
             conn.commit()
             result = None
         return result
+    except psycopg2.OperationalError as e:
+        # 运行时断连 / 连接池取到坏连接等
+        raise DatabaseUnavailableError("数据库连接异常（可能已断开），请稍后重试。") from e
     except Exception as e:
         conn.rollback()  # 出错时回滚
         raise e

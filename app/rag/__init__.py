@@ -1,5 +1,5 @@
 # app/rag/__init__.py
-from app.connect import execute_query
+from app.connect import DatabaseUnavailableError, execute_query
 from app.rag.retriever import hybrid_search
 from app.rag.retriever_helpers import (
     ORIGINAL_TEXT_CONTENT_TYPE,
@@ -9,23 +9,29 @@ from app.rag.retriever_helpers import (
 
 
 def _get_document_name(book_id: str) -> str:
-    row = execute_query(
-        "SELECT name FROM documents WHERE id = %s",
-        (book_id,),
-        fetch_one=True,
-    )
-    return row["name"] if row else "未知来源"
+    try:
+        row = execute_query(
+            "SELECT name FROM documents WHERE id = %s",
+            (book_id,),
+            fetch_one=True,
+        )
+        return row["name"] if row else "未知来源"
+    except DatabaseUnavailableError:
+        return "未知来源"
 
 
 def _get_document_name_and_authors(book_id: str) -> tuple[str, list[str]]:
-    row = execute_query(
-        "SELECT name, authors FROM documents WHERE id = %s",
-        (book_id,),
-        fetch_one=True,
-    )
-    if not row:
+    try:
+        row = execute_query(
+            "SELECT name, authors FROM documents WHERE id = %s",
+            (book_id,),
+            fetch_one=True,
+        )
+        if not row:
+            return "未知来源", []
+        return row["name"], (row.get("authors") or [])
+    except DatabaseUnavailableError:
         return "未知来源", []
-    return row["name"], (row.get("authors") or [])
 
 
 def _format_item(index: int, item: dict) -> str:
