@@ -5,6 +5,10 @@ import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor  # 返回字典格式的结果
 from urllib.parse import urlparse
+from dotenv import load_dotenv
+
+# 让直接运行 `python app/connect.py ...` 也能读取 .env 中的 DB_URL
+load_dotenv()
 
 # 直接粘贴最新连接地址到这里即可，或通过环境变量 DB_URL 覆盖
 _DEFAULT_URL = "postgresql://postgres:lchgjt88@dbconn.sealoshzh.site:47025/postgres"
