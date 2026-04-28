@@ -4,15 +4,19 @@ load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import auth, sessions, chat, messages
+from app.api import auth, sessions, chat, messages, ar
 
 app = FastAPI(title="YingZaoFaShi RAG API")
 
 
 # 配置允许跨域的列表
 origins = [
-    "http://localhost:5173", # 你的前端开发地址
+    "http://localhost:5173", # 前端开发地址
     "http://127.0.0.1:5173",
+    # AR 设备：允许内网所有来源
+    "http://localhost:*",
+    "http://127.0.0.1:*",
+    "http://10.*.*.*",     # 私有网络
 ]
 
 # 配置跨域，解决前端 Web 调试时的跨域问题
@@ -29,6 +33,7 @@ app.include_router(auth.router,     prefix="/api/v1/auth",tags=["用户认证"])
 app.include_router(sessions.router, prefix="/api/v1/sessions",tags=["会话管理"])
 app.include_router(chat.router,     prefix="/api/v1/chat",tags=["聊天服务"])
 app.include_router(messages.router, prefix="/api/v1/messages",tags=["用户反馈"])
+app.include_router(ar.router,       tags=["AR 设备"])
 
 
 @app.get("/")
@@ -38,4 +43,4 @@ def root():
 if __name__ == "__main__":
     import uvicorn
     # 建议使用 uvicorn 启动
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8080, reload=True)
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)

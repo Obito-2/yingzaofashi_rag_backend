@@ -352,7 +352,7 @@ def stream_final_answer(
         elif state.get("empty_retrieval_streak", 0) >= 2 and clues_text:
             system += BOUNDARY_NO_HITS
 
-        system += "\n\n请在回答中引用参考资料时，在相关句子末尾标注来源编号，如[1]、[2]。不要在回答末尾生成引用列表。"
+        system += "\n\n请在回答中引用参考资料时，在相关句子末尾标注来源编号，如[1]、[2]（编号对应线索中的标记）。\n\n在回答末尾生成参考文献列表，格式如下：\n\n**【参考文献】**\n[1] 书籍名称 作者 toc_path\n[2] 书籍名称 作者 toc_path\n\n只列出在回答中被引用的文献。"
 
     messages: list = [SystemMessage(content=system)]
     for m in history:

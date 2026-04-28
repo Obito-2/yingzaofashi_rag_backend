@@ -92,8 +92,8 @@ relation_types：illustrates（图文配对）, annotates（注解关联）。
 用户问题：拆字为金巢的字怎么读，是什么意思？
 {"query":"拆字为金巢的字怎么读，是什么意思？","intents":[{"type":"rare_char","filters":{"book_ids":["rare_chars"],"content_types":["annotation"],"relation_types":[]},"enabled_retrievers":["text_vec","text_kw"]}],"is_complex":false,"sub_queries":[]}
 
-用户问题：琴面昂是什么意思？
-{"query":"琴面昂是什么意思？","intents":[{"type":"term_explain","filters":{"book_ids":["terms_brief"],"content_types":["interpretation"],"relation_types":[]},"enabled_retrievers":["text_vec","text_kw"]}],"is_complex":false,"sub_queries":[]}
+用户问题：琴面昂是什么？
+{"query":"琴面昂是什么？","intents":[{"type":"term_explain","filters":{"book_ids":["terms_brief"],"content_types":["interpretation"],"relation_types":[]},"enabled_retrievers":["text_vec","text_kw"]}],"is_complex":false,"sub_queries":[]}
 
 用户问题：垒脊瓦的定义是什么？
 {"query":"垒脊瓦的定义是什么？","intents":[{"type":"term_explain","filters":{"book_ids":["terms_brief"],"content_types":["interpretation"],"relation_types":[]},"enabled_retrievers":["text_vec","text_kw"]}],"is_complex":false,"sub_queries":[]}

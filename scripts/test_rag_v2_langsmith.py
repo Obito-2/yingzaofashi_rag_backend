@@ -23,6 +23,7 @@ LangSmith trace 链路：
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
@@ -77,24 +78,6 @@ def _print_result(result: dict, use_llm: bool) -> None:
     print(f"  items 数量：{len(items)}")
     print(f"  relations 数量：{len(relations)}")
 
-    if items:
-        print("\n  前几条 items 摘要：")
-        for i, item in enumerate(items[:5]):
-            item_type = item.get("type", "?")
-            score = item.get("score")
-            score_str = f"{score:.4f}" if isinstance(score, float) else str(score)
-            meta = item.get("metadata") or {}
-            book_id = meta.get("book_id", "")
-            content_type = meta.get("content_type", "")
-            source_ret = item.get("_source_retriever", "")
-            content = item.get("content") or item.get("main_text") or ""
-            preview = content[:100].replace("\n", " ")
-            print(
-                f"  [{i+1}] type={item_type} score={score_str} "
-                f"book={book_id} ct={content_type} ret={source_ret}"
-            )
-            print(f"       {preview}…" if len(content) > 100 else f"       {preview}")
-
     if relations:
         print(f"\n  前几条 relations：")
         for rel in relations[:3]:
@@ -104,6 +87,14 @@ def _print_result(result: dict, use_llm: bool) -> None:
 
 
 def main() -> None:
+    # Windows / PowerShell 下避免中文输出乱码
+    try:
+        # typing 上 TextIO 不一定有 reconfigure，这里用 getattr 规避静态检查报错
+        getattr(sys.stdout, "reconfigure")(encoding="utf-8")
+        getattr(sys.stderr, "reconfigure")(encoding="utf-8")
+    except Exception:
+        pass
+
     parser = argparse.ArgumentParser(
         description="测试 rag_v2 混合检索并在 LangSmith 产生追踪。",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -134,6 +125,25 @@ def main() -> None:
         metavar="N",
         help="RRF 融合后最终返回数量（默认 10）",
     )
+    parser.add_argument(
+        "--print-json",
+        action="store_true",
+        help="直接以 JSON 输出检索结果（items/relations/debug_info）",
+    )
+    parser.add_argument(
+        "--max-items",
+        type=int,
+        default=0,
+        metavar="N",
+        help="最多打印多少条 items（0 表示全部，默认 0）",
+    )
+    parser.add_argument(
+        "--content-len",
+        type=int,
+        default=300,
+        metavar="N",
+        help="每条 item 的 content 最多打印字符数（默认 300）",
+    )
     args = parser.parse_args()
 
     from dotenv import load_dotenv
@@ -141,7 +151,18 @@ def main() -> None:
 
     _tracing_hint()
 
-    from app.rag_v2 import hybrid_search_v2_with_llm
+    try:
+        from app.rag_v2 import hybrid_search_v2_with_llm
+    except ModuleNotFoundError as e:
+        print(f"依赖缺失：{e}", file=sys.stderr)
+        print(
+            "请先安装依赖（例如在虚拟环境中）：\n"
+            "  pip install -r requirements.txt\n"
+            "或至少安装缺失包（例如）：\n"
+            "  pip install sqlmodel",
+            file=sys.stderr,
+        )
+        raise
 
     query = args.query.strip()
     if not query:
@@ -160,11 +181,53 @@ def main() -> None:
         with_relations=args.with_relations,
     )
 
+    if args.print_json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+
     _print_result(result, use_llm)
+
+    items = result.get("items") or []
+    max_items = args.max_items if args.max_items and args.max_items > 0 else len(items)
+    content_len = max(0, int(args.content_len))
+
+    if items:
+        print("\n--- items 逐条输出 ---")
+        for i, item in enumerate(items[:max_items]):
+            item_type = item.get("type", "?")
+            item_id = item.get("id", "")
+            score = item.get("score")
+            score_str = f"{score:.6f}" if isinstance(score, float) else str(score)
+            meta = item.get("metadata") or {}
+            book_id = meta.get("book_id", "")
+            content_type = meta.get("content_type", "")
+            is_main = item.get("is_main")
+            source_ret = item.get("source_retriever", "")
+            intent_type = item.get("intent_type", "")
+            content = (item.get("content") or "").replace("\r\n", "\n")
+            shown = content if content_len == 0 else content[:content_len]
+
+            print(
+                f"\n[{i+1}] type={item_type} score={score_str} is_main={is_main} "
+                f"intent={intent_type} ret={source_ret} book={book_id} ct={content_type}"
+            )
+            if item_id:
+                print(f"  id: {item_id}")
+            if meta:
+                print("  metadata:")
+                for k, v in meta.items():
+                    if v is None or v == "":
+                        continue
+                    print(f"    - {k}: {v}")
+            if shown:
+                print("  content:")
+                print(shown)
+                if content_len != 0 and len(content) > content_len:
+                    print("  ...(content 已截断)")
 
     print(
         "\n完成。请在 LangSmith 中查看本次 trace"
-        "（链路：hybrid_search_v2_with_llm → recognize_intent_llm → hybrid_search_v2 → rag_v2_parallel_main）。"
+        # "（链路：hybrid_search_v2_with_llm → recognize_intent_llm → hybrid_search_v2 → rag_v2_parallel_main）。"
     )
 
 
