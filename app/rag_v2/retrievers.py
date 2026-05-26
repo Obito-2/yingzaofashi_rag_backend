@@ -1,4 +1,4 @@
-"""五路主检索 + RelationRetriever；行 dict 与旧 hybrid_search 对齐。"""
+"""五路主检索 + RelationRetriever；"""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

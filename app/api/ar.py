@@ -15,6 +15,7 @@ router = APIRouter(prefix="/ar", tags=["ar"])
 class ARChatRequest(BaseModel):
     """AR 设备提问请求"""
     query: str  # 用户问题
+    thread_id: str | None = None  # LangSmith 线程 ID，用于观察会话
 
 
 def sse_event(event: str, data: dict) -> str:
@@ -23,15 +24,15 @@ def sse_event(event: str, data: dict) -> str:
 
 
 @traceable(name="ar_chat", run_type="chain")
-def _stream_ar_chat(query: str):
+def _stream_ar_chat(query: str, thread_id: str | None = None):
     """
     AR 设备专用流式生成器
     - 无认证、无会话、无历史
     - 单轮问答，流式推送结果
     """
-    # 1. 执行 Agent（无会话 ID）
+    # 1. 执行 Agent（传入 thread_id 以关联 LangSmith 线程）
     try:
-        agent_state = run_agent_rag(query)
+        agent_state = run_agent_rag(query, session_id=thread_id)
     except Exception as e:
         yield sse_event("error", {"code": 5003, "msg": str(e)})
         return
@@ -70,25 +71,6 @@ def _stream_ar_chat(query: str):
 def ar_chat(req: ARChatRequest):
     """
     AR 设备专用接口 - 流式 SSE 返回
-
-    使用示例（Unity C#）：
-    ```csharp
-    var request = new UnityWebRequest("http://内网IP:8000/ar/chat", "POST");
-    var json = JsonConvert.SerializeObject(new { query = "斗栱是什么？" });
-    request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(json));
-    request.SetRequestHeader("Content-Type", "application/json");
-
-    // 处理 SSE 流
-    var response = UnityWebRequest.Post("...", "application/json");
-    ```
-
-    **SSE 事件说明：**
-    - `citations`: {merged search results} - 引文信息
-    - `agent_trace`: {scratchpad: [...]} - Agent 思考过程
-    - `clarification`: {question: str} - 需要澄清的问题
-    - `message`: {content: str} - 流式答案（多次）
-    - `done`: {status: "finished"} - 完成标记
-    - `error`: {code, msg} - 错误信息
     """
     if not req.query or not req.query.strip():
         return StreamingResponse(
@@ -98,7 +80,7 @@ def ar_chat(req: ARChatRequest):
         )
 
     return StreamingResponse(
-        _stream_ar_chat(req.query.strip()),
+        _stream_ar_chat(req.query.strip(), thread_id=req.thread_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

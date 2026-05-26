@@ -67,7 +67,7 @@ def initial_agent_state(user_input: str) -> AgentState:
 def run_agent_rag(user_input: str, *, session_id: str | None = None) -> AgentState:
     config: RunnableConfig | dict = {}
     if session_id:
-        config = {"metadata": {"session_id": session_id}}
+        config = {"metadata": {"thread_id": session_id}}
     return cast(
         AgentState,
         get_agent_graph().invoke(initial_agent_state(user_input), config=config or None),
